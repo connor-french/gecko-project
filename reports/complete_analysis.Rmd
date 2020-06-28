@@ -1,0 +1,1111 @@
+---
+title: "Species distribution modeling and landscape genetics of P. benedetti"
+author: Connor French
+output: 
+  html_document:
+    theme: flatly
+    highlight: tango
+    toc: true
+    toc_float: true
+    collapsed: false
+    code_folding: show
+---
+
+## Intro
+
+This is a report containing all analyses for the species distribution modeling and landscape genetics portions of Sniffin et al. The first portion contains modified output from [Wallace](https://wallaceecomod.github.io/), a platform for species distribution modeling. Followed are analyses and figures for landscape genetics. Wallace automatically outputs a `.Rmd` file, which I've modified to include the rest of the analyses. If coding and commenting conventions seem to jump around, this is why.  
+
+I'm using the `here()` package and R Projects for managing the workspace, so everything should run right out of the box, assuming package versioning is the same. I've included a printout of my environment, including my OS, package versions, etc. at the end of the document that you can refer to if anything breaks. Don't move files around! 
+
+
+### Package installation
+
+The following R packages must be installed and loaded
+before starting.  
+
+```{r message=FALSE, warning=FALSE, results='hide'}
+library(spocc)
+library(spThin)
+library(dismo)
+library(rgeos)
+library(ENMeval)
+library(tidyverse)
+library(ggspatial)
+library(gdistance)
+library(sf)
+library(rnaturalearth)
+library(patchwork)
+library(here)
+library(adegenet)
+library(dartR)
+library(vcfR)
+library(ggrepel)
+```
+
+Wallace also includes several functions developed to help integrate
+different packages and some additional functionality. For this reason,
+it is necessary to load the file `functions.R`, The function
+`system.file()` finds this script, and `source()` loads it.  
+
+```{r}
+source(system.file('shiny/funcs', 'functions.R', package = 'wallace'))
+```
+
+
+## Species distribution modeling
+
+Read in occurrence data.  
+```{r}
+# create path to user occurrences csv file
+userOccs.path <- here("data", "sample_latlongs.csv")
+
+# read in csv
+userOccs.csv <- read.csv(userOccs.path, header = TRUE)
+
+# remove rows with duplicate coordinates
+occs.dups <- duplicated(userOccs.csv[c('longitude', 'latitude')])
+occs <- userOccs.csv[!occs.dups, ]
+
+# remove NAs
+occs <- occs[complete.cases(occs$longitude, occs$latitude),]
+
+# give all records a unique ID
+occs$occID <- row.names(occs)
+```
+
+### Process Occurrence Data
+
+Spatial thinning selected. Thin distance selected is 5 km.  
+
+```{r}
+set.seed(273)
+output <-
+  spThin::thin(
+    occs,
+    'latitude',
+    'longitude',
+    'name',
+    thin.par = 5,
+    reps = 100,
+    locs.thinned.list.return = TRUE,
+    write.files = FALSE,
+    verbose = FALSE
+  )
+```
+
+Since spThin did 100 iterations, there are 100 different variations of
+how it thinned your occurrence localities. As there is a stochastic
+element in the algorithm, some iterations may include more localities
+than the others, and we need to make sure we maximize the number of
+localities we proceed with.
+
+```{r}
+# find the iteration that returns the max number of occurrences
+maxThin <- which(sapply(output, nrow) == max(sapply(output, nrow)))
+
+# if there's more than one max, pick the first one
+maxThin <-
+  output[[ifelse(length(maxThin) > 1, maxThin[1], maxThin)]]
+
+# subset occs to match only thinned occs. Preserve the full locality dataset as occs_all
+occs_all <- occs
+occs <- occs[as.numeric(rownames(maxThin)), ]
+
+# write thinned occs to spreadsheet
+thin_occs_dir <- here("output", "spreadsheets", "thinned_occs.csv")
+write_csv(occs, thin_occs_dir)
+```
+
+### Obtain Environmental Data
+
+Only considering bio1, bio5, bio6, bio10, bio11, bio12, bio13, and bio14 after assessing the correlation among rasters and removing ecologically irrelevant variables that have a correlation > 0.7 with more ecologically relevant variables.  
+
+```{r}
+d.envs <- here("data", "current_climate")
+
+# create paths to the raster files
+userRas.paths <-
+  file.path(
+    d.envs,
+    c(
+      'bio1.tif',
+      'bio5.tif',
+      'bio6.tif',
+      'bio10.tif',
+      'bio11.tif',
+      'bio12.tif',
+      'bio13.tif',
+      'bio14.tif'
+    )
+  )
+
+# make a RasterStack out of the raster files
+envs <- raster::stack(userRas.paths)
+```
+
+### Process Environmental Data
+
+Background selection technique chosen as Minimum Convex Polygon.  
+
+```{r}
+occs.xy <- occs[c('longitude', 'latitude')]
+sp::coordinates(occs.xy) <- ~ longitude + latitude
+bgExt <- mcp(occs.xy)
+```
+
+Buffer size of the study extent polygon defined as 0.5 degrees.  
+
+```{r}
+bgExt <- rgeos::gBuffer(bgExt, width = 0.5)
+```
+
+Mask environmental variables by Minimum Convex Polygon, and take a
+random sample of background values from the study extent. As the sample
+is random, your results may be different than those in the session. If
+there seems to be too much variability in these background samples, try
+increasing the number from 10,000 to something higher (e.g. 50,000 or
+100,000). The better your background sample, the less variability you’ll
+have between runs.  
+
+```{r}
+set.seed(2354)
+# crop the environmental rasters by the background extent shape
+envsBgCrop <- raster::crop(envs, bgExt)
+# mask the background extent shape from the cropped raster
+envsBgMsk <- raster::mask(envsBgCrop, bgExt)
+# sample random background points. Sometimes throws an error "Error: attempt to run non-function"- the functions still runs correctly, so idk what happened
+bg.xy <- dismo::randomPoints(envsBgMsk, 20000)
+# convert matrix output to data frame
+bg.xy <- as.data.frame(bg.xy)
+# write background points to df
+bg_dir <- here("output", "spreadsheets", "background_points.csv")
+write_csv(bg.xy, bg_dir)
+```
+
+### Partition Occurrence Data
+
+Occurrence data is now partitioned for cross-validation, a method that
+iteratively builds a model on all but one group and evaluates that model
+on the left-out group.  
+
+For example, if the data is partitioned into 3 groups A, B, and C, a
+model is first built with groups A and B and is evaluated on C. This is
+repeated by building a model with B and C and evaluating on A, and so on
+until all combinations are done.  
+
+Cross-validation operates under the assumption that the groups are
+independent of each other, which may or may not be a safe assumption for
+your dataset. Spatial partitioning is one way to ensure more
+independence between groups.  
+
+I'm partitioning using a jackknife approach, since our sample size is too low for a spatial blocking method to be effective.  
+
+```{r}
+set.seed(18736)
+occs.xy <- occs[c('longitude', 'latitude')]
+group.data <- ENMeval::get.jackknife(occ = occs.xy, bg.coords = bg.xy)
+```
+
+```{r}
+# pull out the occurrence and background partition group numbers from the list
+occs.grp <- group.data[[1]]
+bg.grp <- group.data[[2]]
+```
+
+### Build and Evaluate Niche Model
+
+You selected the maxent model.  
+
+```{r warning=FALSE, message=FALSE, cache=TRUE}
+set.seed(8372)
+# define the vector of regularization multipliers to test
+rms <- seq(0.5, 5, 0.5)
+# iterate model building over all chosen parameter settings
+e <-
+  ENMeval::ENMevaluate(
+    occs.xy,
+    envsBgMsk,
+    bg.coords = bg.xy,
+    RMvalues = rms,
+    fc = c('L', 'LQ', 'H', 'LQH'),
+    method = 'user',
+    occs.grp,
+    bg.grp,
+    clamp = TRUE,
+    algorithm = "maxnet"
+  )
+
+# unpack the results data frame, the list of models, and the RasterStack of raw predictions
+evalTbl <- e@results
+evalMods <- e@models
+names(evalMods) <- e@results$settings
+evalPreds <- e@predictions
+
+# write model output to file
+model_path <- here("output", "model.RDS")
+saveRDS(e, file = model_path)
+```
+
+View the response curve for environmental variables from the final model. In this case we only had one, bio1 (Average Annual Temperature).  
+
+```{r message=FALSE, warning=FALSE}
+# view response curves for environmental variables with non-zero coefficients
+plot(evalMods[["L_2.5"]], vars = c('bio1'), type = "cloglog")
+
+# write response curve plot to file
+resp_path <- here("output", "figures", "supp_fig_s2_resp_curve.pdf")
+pdf(resp_path, width = 3.54, height = 3.0)
+plot(evalMods[["L_2.5"]], vars = c('bio1'), type = "cloglog")
+dev.off()
+```
+
+Take a look at the model results. I'm selecting models based on AICc, so this is what I'm plotting. There are many models within 2 AICc, but they are all fairly similar and retain a single variable. Just picking the top model since it is a simple model and it doesn't change the results much qualitatively or quantitatively.  
+
+```{r}
+# view ENMeval results
+ENMeval::eval.plot(evalTbl, value = "delta.AICc")
+```
+
+```{r}
+# Select your model from the models list
+mod <- evalMods[["L_2.5"]]
+```
+
+
+Predict model to original background area plus Colima.  
+
+```{r, message=FALSE, warning=FALSE}
+# add colima to the background extent to extend prediction area
+colima <-
+  rnaturalearth::ne_states(country = "Mexico", returnclass = "sf") %>%
+  filter(name == "Colima") %>%
+  st_crop(
+    xmin = -106,
+    ymin = 20,
+    xmax = 106,
+    ymax = -18
+  )
+bgExt_sf <- st_as_sf(bgExt)
+st_crs(bgExt_sf) <- "+proj=longlat +datum=WGS84 +no_defs"
+
+
+bg_colima <- st_union(bgExt_sf, colima) %>%
+  st_convex_hull()
+
+# crop the environmental rasters by the background extent shape
+envsBgCrop_col <- raster::crop(envs, bg_colima)
+# mask the background extent shape from the cropped raster
+envsBgMsk_col <- raster::mask(envsBgCrop_col, bg_colima)
+
+# generate cloglog prediction
+pred <-
+  ENMeval::maxnet.predictRaster(mod, envsBgMsk_col, type = 'cloglog', clamp = TRUE)
+
+crs(pred) <- '+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs'
+
+#write prediction to file
+pred_path <- here("output", "rasters", "current_projection.tif")
+raster::writeRaster(pred, filename = pred_path, format = "GTiff", overwrite = TRUE)
+```
+
+```{r}
+plot(pred)
+```
+
+MESS map. It looks like most possible dispersal paths within their dispersal limits are analogous climate. A landscape genetics analysis with LGM climate would be reasonable.  
+
+```{r warning=FALSE, message=FALSE, cache=TRUE}
+bg_xy <- raster::as.data.frame(envsBgMsk) %>% na.omit()
+
+current_mess <- dismo::mess(envsBgMsk_col, bg_xy)
+
+crs(current_mess) <-
+  '+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs'
+
+ggplot() +
+  ggspatial::layer_spatial(data = current_mess) +
+  scale_fill_gradient2(na.value = "lightgrey") +
+  geom_point(data = occs, aes(x = longitude, y = latitude)) +
+  theme_minimal()
+
+# write mess raster to file
+mess_rast_out <- here("output", "rasters", "current_mess.tif")
+writeRaster(current_mess, mess_rast_out, format = "GTiff", overwrite = TRUE)
+```
+
+
+Thresholded model prediction for current climate. Thresholded by the minimum 10th percentile training presence. This threshold is more conservative then the minimum training presence value, although it likely converges the the MTP given the low number of training localities.  
+
+```{r}
+# get predicted values for occurrence grid cells
+occPredVals <- raster::extract(pred, occs.xy)
+# define minimum training presence threshold
+thr <- thresh(occPredVals, "p10")
+# threshold model prediction
+pred_p10 <- pred > thr
+
+#write threshold model prediction to file
+thresh_path <-
+  here("output", "rasters", "thresh_p10_current_pred.tif")
+raster::writeRaster(pred_p10, filename = thresh_path, format = "GTiff", overwrite = TRUE)
+```
+
+```{r}
+# plot the model prediction
+plot(pred_p10)
+```
+
+Project to the lgm.  
+
+```{r warning=FALSE, message=FALSE}
+lgm_path <- here("data", "lgm_climate")
+
+lgm_layers <- file.path(
+  lgm_path,
+  c(
+    'bio1.tif',
+    'bio5.tif',
+    'bio6.tif',
+    'bio10.tif',
+    'bio11.tif',
+    'bio12.tif',
+    'bio13.tif',
+    'bio14.tif'
+  )
+) %>%
+  raster::stack() %>%
+  raster::crop(bg_colima) %>%
+  raster::mask(bg_colima)
+
+# generate cloglog prediction
+lgm_pred <-
+  ENMeval::maxnet.predictRaster(mod, lgm_layers, type = 'cloglog', clamp = TRUE) 
+
+crs(lgm_pred) <- '+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs'
+```
+
+```{r}
+plot(lgm_pred)
+```
+
+
+MESS map. It looks like most possible dispersal paths within their dispersal limits are analogous climate. A landscape genetics analysis with LGM climate would be reasonable.
+```{r warning=FALSE, message=FALSE, cache=TRUE}
+lgm_mess <- dismo::mess(lgm_layers, bg_xy)
+
+crs(lgm_mess) <- '+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs'
+
+ggplot() +
+  ggspatial::layer_spatial(data = lgm_mess) +
+  scale_fill_gradient2(na.value = "lightgrey") +
+  geom_point(data = occs, aes(x = longitude, y = latitude)) +
+  theme_minimal()
+
+```
+
+
+LGM 10th percentile thresholded map.  
+
+```{r}
+# get predicted values for occurrence grid cells
+occPredVals_lgm <- raster::extract(lgm_pred, occs.xy)
+# define minimum training presence threshold
+thr_lgm <- thresh(occPredVals_lgm, "p10")
+# threshold model prediction
+lgm_p10 <- lgm_pred > thr_lgm
+
+plot(lgm_p10)
+```
+
+
+Write lgm projection and mess map to files.  
+
+```{r}
+lgm_out_path <- here("output", "rasters")
+
+raster::writeRaster(
+  lgm_pred,
+  filename = file.path(lgm_out_path, "lgm_projection.tif"),
+  format = "GTiff",
+  overwrite = TRUE
+)
+
+ raster::writeRaster(
+   lgm_mess,
+   filename = file.path(lgm_out_path, "lgm_mess.tif"),
+   format = "GTiff",
+   overwrite = TRUE
+   )
+
+raster::writeRaster(
+  lgm_p10,
+  filename = file.path(lgm_out_path, "thresh_p10_lgm_pred.tif"),
+  format = "GTiff",
+  overwrite = TRUE
+)
+```
+
+Generate friction surface for landscape genetics. Using the rSPD method because it allows users to specify the amount of randomness in the walk (e.g. following a least-cost path vs a totally random walk). Given that we don't know much about how geckos traverse the landscape and the landscape is broken into large cell sizes relative to an individual gecko's dispersal decision-making, I'm setting the dispersal kernel close to random.  
+
+```{r cache=TRUE}
+#read in all localities where there is genetic sampling
+gen_locs_path <- here("data", "sample_latlongs.csv")
+gen_locs <-
+  read.csv(gen_locs_path) %>% 
+  dplyr::select(longitude, latitude) %>% 
+  filter(!duplicated(longitude)) # single observation per locality for distance calculations
+
+coordinates(gen_locs) <- ~ longitude + latitude
+
+#geographic distances for pure IBD hypothesis
+geo_dist <- raster::pointDistance(gen_locs, lonlat = TRUE) %>%
+  as.dist()
+
+###transition matrices with geographic corrections
+tr_current <- pred %>%
+  spatialEco::raster.invert() %>%  #invert the SDM values
+  gdistance::transition(mean, directions = 8) %>%  #create a transition matrix
+  gdistance::geoCorrection("r", scl = TRUE) #correct for geographic distortion
+
+
+tr_lgm <- lgm_pred %>%
+  spatialEco::raster.invert() %>%  #invert the SDM values
+  gdistance::transition(mean, directions = 8) %>%  #create a transition matrix
+  gdistance::geoCorrection("r", scl = TRUE) #correct for geographic distortion
+
+#calculate resistance distance with rSPD
+spd_current <-
+  gdistance::rSPDistance(
+    tr_current,
+    from = gen_locs,
+    to = gen_locs,
+    theta = 1e-12,
+    totalNet = "total",
+    method = 1
+  )
+
+spd_lgm <-
+  gdistance::rSPDistance(
+    tr_lgm,
+    from = gen_locs,
+    to = gen_locs,
+    theta = 1e-12,
+    totalNet = "total",
+    method = 1
+  )
+
+dist_path <- here("output", "spreadsheets")
+### Write geographic distance matrix to file
+write.table(geo_dist %>% as.matrix(),
+            file = file.path(dist_path, "geo_distance_matrix.txt"))
+
+### Write resistance matrices to file
+write.table(spd_current %>% as.matrix(),
+            file = file.path(dist_path, "resistance_dist_current.txt"))
+
+
+write.table(spd_lgm %>% as.matrix(),
+            file = file.path(dist_path, "resistance_dist_lgm.txt"))
+
+```
+
+
+Calculate a pairwise Fst matrix for our genetic distance matrix. I set `eval=FALSE` to prevent this from running when rendering the document. The `dartR::gl.fst.pop()` function takes forever to run. I'd recommend running it as a background process or when you don't need the computer for a while.
+
+```{r eval=FALSE}
+data_path <- here("data")
+
+pops <- read_csv(file.path(data_path, "pops_file.csv")) %>%
+  mutate(pops = stringr::str_c("pop_", pops))
+
+gen_data <-
+  read.vcfR(file.path(data_path, "lg_one_per_locus.recode.vcf")) %>%
+  vcfR2genlight()
+
+pop(gen_data) <- pops$pops
+
+# calc pairwise fst
+fst_mat <- dartR::gl.fst.pop(gen_data, nboots = 1)
+
+fst_mat <- as.matrix(as.dist(fst_mat))
+
+# write to file
+write.table(fst_mat,
+            file = file.path(dist_path, "fst_matrix.txt"))
+```
+
+
+MMRR analysis.  
+
+```{r cache=TRUE}
+# source Wang 2013's MMRR script. I obtained it from here: https://nature.berkeley.edu/wanglab/data/
+source(here("R", "MMRR_function.R"))
+
+# list of predictors
+spd_current <-
+  read.table(file = file.path(dist_path, "resistance_dist_current.txt")) %>%
+  as.matrix()
+
+spd_lgm <-
+  read.table(file = file.path(dist_path, "resistance_dist_lgm.txt")) %>%
+  as.matrix()
+
+geo_dist <-
+  read.table(file = file.path(dist_path, "geo_distance_matrix.txt")) %>%
+  as.matrix()
+
+# to remove the necessity of running the previous chunk
+fst_mat <- 
+  read.table(file = file.path(dist_path, "fst_matrix.txt")) %>%
+  as.matrix()
+
+pred_vars <- list(spd_current, spd_lgm, geo_dist)
+
+set.seed(84736)
+mmrr_obj <- MMRR(fst_mat, pred_vars, nperm = 1000)
+
+# save mmrr to file
+rds_path <- here("output", "mmrr_model.rds")
+saveRDS(mmrr_obj, file = rds_path)
+
+mmrr_obj
+```
+
+## Publication figures
+
+Here is a color palette generated from an image of Molecular Ecology's cover that I'll use for the Mol Eco submission:  
+Dark Blue: `#043D8B`  
+Gold: `#EAE10C`  
+Light Steel Blue: `#D3D9EA`  
+Steel Blue: `#5A80AB`  
+Dark Olive Green: `#608151`  
+
+### Fig. 3 sNMF
+sNMF results illustrating the best K and the K used for demographic analysis. Localities are sorted in descending order by latitude to give a sense of geography.
+
+```{r, message = FALSE}
+
+# palettes for the two bar charts
+k3_pal <- c(P1 = "#043D8B", P2 = "#EAE10C", P3 = "#5A80AB")
+k5_pal <- c(P1 = "#043D8B", P2 = "#EAE10C", P3 = "#D3D9EA", P4 = "#5A80AB", P5 = "#608151")
+
+# get lat-longs for ordering the localities from north to south and assign the coordinates to the correct locality
+locs <- read_csv(here("data", "sample_latlongs.csv")) %>% 
+  mutate(
+    locality = case_when(
+      near(longitude, -105.0444, tol = 0.0001) ~ "ST",
+      near(longitude, -105.2503, tol = 0.0001) ~ "PC",
+      near(longitude, -105.0980, tol = 0.0001) ~ "LG",
+      near(longitude, -104.8789, tol = 0.0001) ~ "P-35",
+      near(longitude, -104.8027, tol = 0.0001) ~ "PZ",
+      near(longitude, -104.5181, tol = 0.0001) ~ "CH",
+      near(longitude, -104.7663, tol = 0.0001) ~ "PT",
+      near(longitude, -104.9325, tol = 0.0001) ~ "LS",
+      near(longitude, -104.8500, tol = 0.0001) ~ "P-30"
+    ) %>% as.factor()
+  ) %>% 
+  filter(!duplicated(locality))
+
+
+# read in snmf results for k=3 and k=5 and assign locality names
+k_3 <- read_csv(here("data", "k3_snmf.csv")) %>% 
+  mutate(locality = case_when(
+    Group == 1 ~ "ST",
+    Group == 2 ~ "PC",
+    Group == 3 ~ "LG",
+    Group == 4 ~ "P-35",
+    Group == 5 ~ "PZ",
+    Group == 6 ~ "CH",
+    Group == 7 ~ "PT",
+    Group == 8 ~ "LS",
+    Group == 9 ~ "P-30"
+  )) 
+
+k_5 <- read_csv(here("data", "k5_snmf.csv")) %>% 
+  mutate(locality = case_when(
+    Group == 1 ~ "ST",
+    Group == 2 ~ "PC",
+    Group == 3 ~ "LG",
+    Group == 4 ~ "P-35",
+    Group == 5 ~ "PZ",
+    Group == 6 ~ "CH",
+    Group == 7 ~ "PT",
+    Group == 8 ~ "LS",
+    Group == 9 ~ "P-30"
+  )) 
+
+# transform data for plotting (only annotating k_3)
+k3_df <- k_3 %>% 
+  # make table long instead of wide
+  pivot_longer(cols = starts_with("P"), names_to = "pop", values_to = "q") %>% 
+  # locality needs to be a factor
+  mutate(locality = as.factor(locality)) %>% 
+  # assign the population assignment according to the max q value and include the assignment probability of the population assignment
+  group_by(Ind) %>%
+  mutate(likely_assignment = pop[which.max(q)],
+         assignment_prob = max(q)) %>% 
+  ungroup() %>%
+  # join with the locality data table
+  left_join(locs, by = "locality") %>% 
+  # order the individuals first by assignment probability, then order the localities by latitude
+  mutate(Ind = fct_reorder(Ind, desc(assignment_prob)),
+         locality = fct_reorder(locality, desc(latitude))) %>% 
+  ungroup()
+
+
+k5_df <- k_5 %>% 
+  pivot_longer(cols = starts_with("P"), names_to = "pop", values_to = "q") %>% 
+  mutate(locality = as.factor(locality)) %>% 
+  group_by(Ind) %>%
+  mutate(likely_assignment = pop[which.max(q)],
+         assignment_prob = max(q)) %>% 
+  ungroup() %>%
+  left_join(locs, by = "locality") %>% 
+  mutate(Ind = fct_reorder(Ind, desc(assignment_prob)),
+         locality = fct_reorder(locality, desc(latitude))) %>% 
+  ungroup()
+
+write_csv(k3_df, here("output", "spreadsheets", "k3_snmf_expanded.csv"))
+
+write_csv(k5_df, here("output", "spreadsheets", "k5_snmf_expanded.csv"))
+
+# make a bar chart of assignment probabilities (only annotating k=3)
+k3_plot <- k3_df %>% 
+  ggplot() +
+  # width = 1 removes whitespace between bars
+  geom_col(aes(x = Ind, y = q, fill = pop), width = 1) +
+  # order and label bars by locality
+  facet_grid(~locality, scales = 'free', space = 'free') +
+  scale_fill_manual(values = k3_pal) +
+  labs(fill = "Population") +
+  theme_minimal() +
+  # some formatting details to make it pretty
+  theme(panel.spacing.x = unit(0, "lines"),
+        axis.line = element_blank(),
+        axis.text = element_blank(),
+        strip.background = element_rect(fill = "transparent", color = "black"),
+        panel.background = element_blank(),
+        axis.title = element_blank(),
+        panel.grid = element_blank()
+        )
+
+k5_plot <- k5_df %>% 
+  ggplot() +
+  geom_col(aes(x = Ind, y = q, fill = pop), width = 1) +
+  facet_grid(~locality, scales = 'free', space = 'free') +
+  scale_fill_manual(values = k5_pal) +
+  labs(fill = "Population") +
+  theme_minimal() +
+  theme(panel.spacing.x = unit(0, "lines"),
+        axis.line = element_blank(),
+        axis.text = element_blank(),
+        strip.background = element_rect(fill = "transparent", color = "black"),
+        panel.background = element_blank(),
+        axis.title = element_blank(),
+        panel.grid = element_blank()
+        )
+
+k3_plot / k5_plot
+
+```
+
+This is a bar chart that indicates the proportion of individuals within a locality assigned to particular populations. I'm using Inkscape to add these below each section of the sNMF plot to indicate the proportion of each assigned population present at each locality.
+```{r}
+# calculate the proportion of assigned population per locality and reformat the data for plotting
+k3_prop <- k3_df %>% 
+  group_by(locality) %>% 
+  summarize(P1 = sum(likely_assignment == "P1") / length(likely_assignment),
+            P2 = sum(likely_assignment == "P2") / length(likely_assignment),
+            P3 = sum(likely_assignment == "P3") / length(likely_assignment)) %>% 
+  pivot_longer(cols = starts_with("P"),
+               names_to = "prop_pop",
+               values_to = "prop")
+
+k5_prop <- k5_df %>% 
+  group_by(locality) %>% 
+  summarize(P1 = sum(likely_assignment == "P1") / length(likely_assignment),
+            P2 = sum(likely_assignment == "P2") / length(likely_assignment),
+            P3 = sum(likely_assignment == "P3") / length(likely_assignment),
+            P4 = sum(likely_assignment == "P4") / length(likely_assignment),
+            P5 = sum(likely_assignment == "P5") / length(likely_assignment)) %>% 
+  pivot_longer(cols = starts_with("P"),
+               names_to = "prop_pop",
+               values_to = "prop")
+
+# simple plot to extract bars from
+k3_prop_plot <- ggplot(data = k3_prop) +
+  geom_col(aes(x = locality, y = prop, fill = prop_pop)) +
+  scale_fill_manual(values = k3_pal) +
+  theme_minimal() +
+  theme(panel.grid = element_blank())
+
+k5_prop_plot <- ggplot(data = k5_prop) +
+  geom_col(aes(x = locality, y = prop, fill = prop_pop)) +
+  scale_fill_manual(values = k5_pal) +
+  theme_minimal() +
+  theme(panel.grid = element_blank())
+
+k3_prop_plot / k5_prop_plot
+
+```
+
+
+
+### Fig. 5. 
+Thresholded plot of the the current and LGM predictions. I'm using a threshold for visualization because what we're interested in seeing is overall range changes from LGM to today.  
+
+```{r, warning=FALSE, message=FALSE, fig.width=5, fig.height=11.1}
+
+# adding site names from Supp Table S1 in the manuscript
+occs_all <- locs %>%
+  mutate(
+    site_name = case_when(
+      near(longitude, -105.0444, tol = 0.0001) ~ "ST",
+      # the near() function is more forgiving than == when comparing doubles
+      near(longitude, -105.2503, tol = 0.0001) ~ "PC",
+      near(longitude, -105.0980, tol = 0.0001) ~ "LG",
+      near(longitude, -104.8789, tol = 0.0001) ~ "P-35",
+      near(longitude, -104.8027, tol = 0.0001) ~ "PZ",
+      near(longitude, -104.5181, tol = 0.0001) ~ "CH",
+      near(longitude, -104.7663, tol = 0.0001) ~ "PT",
+      near(longitude, -104.9325, tol = 0.0001) ~ "LS",
+      near(longitude, -104.8500, tol = 0.0001) ~ "P-30"
+    )
+  )
+
+# A basemap of Mexican states for plotting
+states <-
+  rnaturalearth::ne_states(country = "Mexico", returnclass = "sf")
+states <-
+  st_transform(states, crs = '+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs')
+
+# set the coordinate reference system for both raster layers
+crs(pred_p10) <- '+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs'
+crs(lgm_p10) <- '+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs'
+
+
+# set beginning and end lines for colima label
+line_df <- tibble(x1 = -104.16, y1 = 18.71, x2 = -104, y2 = 18.85)
+
+### Current SDM ####
+pred_p10_sf <- pred_p10 %>% 
+  raster::rasterToPolygons() %>% 
+  st_as_sf()
+
+
+current_map <- ggplot() +
+  geom_sf(data = pred_p10_sf, aes(fill = layer, color = layer)) +
+  scale_fill_gradient(low = "#D3D9EA",
+                      high = "#043D8B",
+                      na.value = "transparent") +
+  scale_color_gradient(low = "#D3D9EA",
+                       high = "#043D8B",
+                       na.value = "transparent") +
+  geom_sf(data = states, fill = "transparent") +
+  geom_point(
+    data = occs_all,
+    aes(x = longitude, y = latitude),
+    shape = 21,
+    color = "white",
+    fill = "black",
+    size = 2.5
+  ) +
+  ggrepel::geom_label_repel(data = occs_all,
+            aes(x = longitude, y = latitude,
+                label = site_name),
+            color = "black",
+            segment.color = "black", 
+            size = 3,
+            label.padding = 0.1) +
+  coord_sf(xlim = c(-105.6, -103.42), ylim = c(18.4, 20.6)) +
+  geom_sf_label(
+    data = states,
+    aes(label = name),
+    nudge_x = -0.5,
+    nudge_y = -0.5
+  ) +
+  geom_segment(data = line_df, aes(
+    x = x1,
+    y = y1,
+    xend = x2,
+    yend = y2
+  )) +
+  labs(x = "Longitude",
+       y = "Latitude",
+       fill = "Suitability") +
+  theme_bw() +
+  theme(legend.position = "none",
+        axis.title = element_text(size = 14))
+
+#### LGM SDM ####
+lgm_p10_sf <- lgm_p10 %>%
+  raster::rasterToPolygons() %>%
+  st_as_sf()
+
+lgm_map <- ggplot() +
+  geom_sf(data = lgm_p10_sf, aes(fill = layer, color = layer)) +
+  scale_fill_gradient(low = "#D3D9EA", high = "#043D8B", na.value = "transparent") +
+  scale_color_gradient(low = "#D3D9EA", high = "#043D8B", na.value = "transparent") +
+  geom_sf(data = states, fill = "transparent") +
+  coord_sf(xlim = c(-105.6, -103.42), ylim = c(18.4, 20.6)) +
+  geom_sf_label(
+    data = states,
+    aes(label = name),
+    nudge_x = -0.5,
+    nudge_y = -0.5
+  ) +
+  geom_segment(data = line_df, aes(
+    x = x1,
+    y = y1,
+    xend = x2,
+    yend = y2
+  )) +
+  geom_point(
+    data = occs_all,
+    aes(x = longitude, y = latitude),
+    shape = 21,
+    color = "white",
+    fill = "black",
+    size = 2.5
+  ) +
+  ggrepel::geom_label_repel(data = occs_all,
+            aes(x = longitude, y = latitude,
+                label = site_name),
+            color = "black",
+            segment.color = "black", 
+            size = 3,
+            label.padding = 0.1) +
+  labs(
+       x = "Longitude",
+       y = "Latitude",
+       fill = "Suitability"
+       ) +
+  theme_bw() +
+  theme(legend.position = "none",
+        axis.title = element_text(size = 14))
+
+
+pred_combo <-
+  current_map / lgm_map +
+  plot_annotation(
+    tag_levels = "a",
+    tag_prefix = "(",
+    tag_suffix = ")",
+    theme = theme(
+      plot.margin = grid::unit(c(0, 0, 0, 0), "mm"),
+      panel.grid.minor = element_blank(),
+      panel.background = element_rect(fill = "transparent", colour = NA),
+      plot.background = element_rect(fill = "transparent", colour = NA)
+    )
+  )
+
+
+fig_out <- here("output", "figures")
+
+ggsave(pred_combo, 
+       filename = "fig5_sdm_projections.pdf", 
+       device = "pdf",
+       width = 90,
+       height = 200,
+       units = "mm",
+       path = fig_out,
+       bg = "transparent"
+       )
+
+pred_combo
+```
+
+### Supplemental Figure 3. MESS maps.  
+
+```{r, warning=FALSE, message=FALSE, fig.width=7, fig.height=11.1}
+
+# current mess
+current_mess <- raster(here("output", "rasters", "current_mess.tif"))
+
+current_mess_sf <- current_mess %>%
+  raster::rasterToPolygons() %>%
+  st_as_sf()
+
+current_mess_plot <- ggplot() +
+  geom_sf(data = current_mess_sf, aes(fill = current_mess, color = current_mess)) +
+  scale_fill_gradient2(na.value = "transparent") +
+  scale_color_gradient2(na.value = "transparent") +
+  geom_sf(data = states, fill = "transparent") +
+  coord_sf(xlim = c(-105.6, -103.42), ylim = c(18.4, 20.6)) +
+  geom_sf_label(
+    data = states,
+    aes(label = name),
+    nudge_x = -0.5,
+    nudge_y = -0.5
+  ) +
+  geom_segment(data = line_df, aes(
+    x = x1,
+    y = y1,
+    xend = x2,
+    yend = y2
+  )) +
+  geom_point(
+    data = occs_all,
+    aes(x = longitude, y = latitude),
+    shape = 21,
+    color = "white",
+    fill = "black",
+    size = 2.5
+  ) +
+  labs(x = "Longitude",
+       y = "Latitude",
+       fill = "MESS") +
+  guides(color = "none") +
+  theme_bw()
+
+# lgm mess
+lgm_mess <- raster(here("output", "rasters", "lgm_mess.tif"))
+
+lgm_mess_sf <- lgm_mess %>%
+  raster::rasterToPolygons() %>%
+  st_as_sf()
+
+lgm_mess_plot <- ggplot() +
+  geom_sf(data = lgm_mess_sf, aes(fill = lgm_mess, color = lgm_mess)) +
+  scale_fill_gradient2(na.value = "transparent") +
+  scale_color_gradient2(na.value = "transparent") +
+  geom_sf(data = states, fill = "transparent") +
+  coord_sf(xlim = c(-105.6, -103.42), ylim = c(18.4, 20.6)) +
+  geom_sf_label(
+    data = states,
+    aes(label = name),
+    nudge_x = -0.5,
+    nudge_y = -0.5
+  ) +
+  geom_segment(data = line_df, aes(
+    x = x1,
+    y = y1,
+    xend = x2,
+    yend = y2
+  )) +
+  geom_point(
+    data = occs_all,
+    aes(x = longitude, y = latitude),
+    shape = 21,
+    color = "white",
+    fill = "black",
+    size = 2.5
+  ) +
+  labs(
+       x = "Longitude",
+       y = "Latitude",
+       fill = "MESS"
+       ) +
+  guides(color = "none") +
+  theme_bw()
+
+mess_combo <-
+  current_mess_plot / lgm_mess_plot +
+  plot_annotation(
+    tag_levels = "a",
+    tag_prefix = "(",
+    tag_suffix = ")",
+    theme = theme(
+      plot.margin = grid::unit(c(0, 0, 0, 0), "mm"),
+      panel.grid.minor = element_blank(),
+      panel.background = element_rect(fill = "transparent", colour = NA),
+      plot.background = element_rect(fill = "transparent", colour = NA)
+    )
+  )
+
+ggsave(mess_combo,
+       filename = "supp_fig_s3_mess.pdf",
+       device = "pdf",
+       width = 100,
+       height = 210,
+       units = "mm",
+       path = fig_out,
+       bg = "transparent"
+       )
+
+mess_combo
+```
+
+### Figure 6. Isolation by distance scatterplot.  
+
+```{r message=FALSE}
+geo_lower <- geo_dist[lower.tri(geo_dist)]
+fst_lower <- fst_mat[lower.tri(fst_mat)]
+
+ibd_df <- tibble(geo_dist = geo_lower, gen_dist = fst_lower)
+
+ibd_plot <- ggplot(data = ibd_df, aes(x = geo_dist, y = gen_dist)) +
+  geom_point() +
+  geom_smooth(method = "lm", color = "black") +
+  labs(x = "Geographic distance (km)", y = expression(F[ST])) +
+  scale_x_continuous(labels = function(x) x / 1000) +
+  theme_bw() +
+  theme(axis.text = element_text(size = 12),
+        panel.grid.minor = element_blank(),
+        plot.margin = margin(2, 3, 2, 2, "mm"))
+
+ggsave(ibd_plot, 
+       filename = "fig_6_ibd.pdf", 
+       device = "pdf",
+       height = 80,
+       width = 120,
+       units = "mm",
+       path = fig_out
+       )
+
+ibd_plot
+```
+
+
+## Session information
+Session information for reproducibility.  
+
+```{r}
+si <- sessionInfo()
+
+si
+```
+
+
+Here is the code for writing the session info to the `doc` folder.  
+
+```{r}
+si_path <- here("doc", "session_info.txt")
+
+# write session info to the doc folder
+writeLines(capture.output(sessionInfo()), si_path)
+```
+
+
+
+## Some extra code
+Masking code in case a reviewer wants us to mask out extrapolated e-space.  
+
+```{r, eval=FALSE}
+## Code to mask rasters in case I decide to. The LGM has some very minor extrapolation across a fair portion of the map (negative numbers near zero). If I masked these, a fair portion of the map would be removed. There isn't really an objective way to decide what MESS value is too low and the more egregious values lie outside of their current range, so I'm providing the MESS maps as supplementary figures to aid in interpretation. 
+
+
+mess_mask_c <- current_mess
+
+# set all negative values to NA to make this a mask
+mess_mask_c[values(mess_mask_c) < -0.001] <- NA # added a small amount to account for imprecision
+crs(mess_mask_c) <- '+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs'
+
+# crop the mess mask
+mess_cropped_c <- mess_mask_c %>% 
+  crop(pred) 
+
+# mask the current climate by the mess mask
+current_masked <- pred %>% 
+  mask(mess_cropped_c)
+
+crs(current_masked) <- '+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs'
+
+```
+
+
+
+
+
+
+
