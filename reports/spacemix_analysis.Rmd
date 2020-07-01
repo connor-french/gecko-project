@@ -13,7 +13,7 @@ library(SpaceMix)
 library(viridis)
 
 use_condaenv(condaenv = "genetics", 
-             conda = "/Users/connorfrench/opt/miniconda3/bin/conda")
+             conda = "/home/rstudio/miniconda3/condabin/conda")
 ```
 
 
@@ -190,7 +190,7 @@ Note- can't attempt to specify another directory to save files to because `run.s
 This run is inferring the geogenetic locations of individuals without admixture. I'm using observed locations as spatial priors. Repeated this twice.  
 
 #### Run 1
-```{r, eval=FALSE}
+```{r}
 run.spacemix.analysis(
   n.fast.reps = 5,
   fast.MCMC.ngen = 5e6,
@@ -221,7 +221,7 @@ run.spacemix.analysis(
 ```
 
 #### Run 2
-```{r, echo = FALSE}
+```{r}
 run.spacemix.analysis(
   n.fast.reps = 5,
   fast.MCMC.ngen = 5e6,
@@ -268,7 +268,7 @@ locs_rand <- cbind(long_rand, lat_rand)
 ```
 
 
-```{r, echo = FALSE}
+```{r}
 run.spacemix.analysis(
   n.fast.reps = 5,
   fast.MCMC.ngen = 5e6,
@@ -301,7 +301,7 @@ run.spacemix.analysis(
 ### Runs 4 and 5: Migration, spatial prior
 
 #### Run 4
-```{r, echo = FALSE}
+```{r}
 run.spacemix.analysis(
   n.fast.reps = 5,
   fast.MCMC.ngen = 5e6,
@@ -332,7 +332,7 @@ run.spacemix.analysis(
 ```
 
 #### Run 5
-```{r, echo = FALSE}
+```{r}
 run.spacemix.analysis(
   n.fast.reps = 5,
   fast.MCMC.ngen = 5e6,
