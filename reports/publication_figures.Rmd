@@ -1,0 +1,1414 @@
+---
+title: "Publication Figures"
+author: "Connor French"
+output: html_document
+---
+
+## Setup
+```{r setup}
+library(ggspatial)
+library(sf)
+library(rnaturalearth)
+library(cowplot)
+library(patchwork)
+library(here)
+library(ggrepel)
+library(raster)
+library(tidyverse)
+library(LEA)
+library(elevatr)
+library(RColorBrewer)
+library(scatterpie)
+
+fig_out <- here("output", "figures")
+source(here("R", "MMRR_function.R"))
+```
+
+
+
+## Publication figures
+
+This is the Bang Wong color palette, designed to be suitable for people with color processing challenges. 
+
+```{r}
+original_palette <- c("#000000", "#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7")
+
+# 5 color palette
+k5_pal <- colorRampPalette(original_palette)(5) 
+names(k5_pal) <- paste0("P", 1:5)
+
+# 6 color palette
+k6_pal <- colorRampPalette(original_palette)(6) 
+names(k6_pal) <- paste0("P", 1:6)
+
+# 7 color palette
+k7_pal <- colorRampPalette(original_palette)(7)
+names(k7_pal) <- paste0("P", 1:7)
+
+# 8 color palette
+k8_pal <- colorRampPalette(original_palette)(8)
+names(k8_pal) <- paste0("P", 1:8)
+
+# 9 color palette for PCA
+pca_pal <- colorRampPalette(original_palette)(9)
+```
+
+
+### PCA Fig
+
+PCA figure of genetic structure among localities of *P. benedetti*. Putting this in the supplementary material. I have to make separate files for the ancestral and imputed allele plots because ggsave isn't behaving.  
+
+```{r}
+alt_0_x_70 <- read_csv(here("output", "spreadsheets", "pca_fig_alt_0_x_70.csv"))
+
+s_0_70 <- read_rds(here("output", "rds_objects", "pca_fig_s_0_70.rds"))
+
+alt_x_70 <- read_csv(here("output", "spreadsheets", "pca_fig_alt_x_70.csv"))
+
+s_70 <- read_rds(here("output", "rds_objects", "pca_fig_s_70.rds"))
+
+pc_0_12_70 <- ggplot(data = alt_0_x_70) +
+  geom_point(aes(x = PC1, y = PC2, color = locality)) +
+  scale_color_manual(values = pca_pal) +
+  labs(x = paste0("PC1 (", round(s_0_70$importance[2,1]*100, 1), "% variance explained)"),
+       y = paste0("PC2 (", round(s_0_70$importance[2,2]*100, 1), "% variance explained)"),
+       title = "A) Ancestral allele \n (30% complete)")
+
+pc_0_23_70 <- ggplot(data = alt_0_x_70) +
+  geom_point(aes(x = PC2, y = PC3, color = locality)) +
+  scale_color_manual(values = pca_pal) +
+  labs(x = paste0("PC2 (", round(s_0_70$importance[2,2]*100, 1), "% variance explained)"),
+       y = paste0("PC3 (", round(s_0_70$importance[2,3]*100, 1), "% variance explained)"))
+
+pc_0_34_70 <- ggplot(data = alt_0_x_70) +
+  geom_point(aes(x = PC3, y = PC4, color = locality)) +
+  scale_color_manual(values = pca_pal) +
+  labs(x = paste0("PC3 (", round(s_0_70$importance[2,3]*100, 1), "% variance explained)"),
+       y = paste0("PC4 (", round(s_0_70$importance[2,4]*100, 1), "% variance explained)"))
+
+pc_0_45_70 <- ggplot(data = alt_0_x_70) +
+  geom_point(aes(x = PC4, y = PC5, color = locality)) +
+  scale_color_manual(values = pca_pal) +
+  labs(x = paste0("PC4 (", round(s_0_70$importance[2,4]*100, 1), "% variance explained)"),
+       y = paste0("PC5 (", round(s_0_70$importance[2,5]*100, 1), "% variance explained)"))
+
+
+pc_12_70 <- ggplot(data = alt_x_70) +
+  geom_point(aes(x = PC1, y = PC2, color = locality), alpha = 0.7) +
+  scale_color_manual(values = pca_pal) +
+  labs(x = paste0("PC1 (", round(s_70$importance[2,1]*100, 1), "% variance explained)"),
+       y = paste0("PC2 (", round(s_70$importance[2,2]*100, 1), "% variance explained)"),
+       title = "B) Imputed alleles \n (30% complete)")
+
+pc_23_70 <- ggplot(data = alt_x_70) +
+  geom_point(aes(x = PC2, y = PC3, color = locality), alpha = 0.7) +
+  scale_color_manual(values = pca_pal, guide = "none") +
+  labs(x = paste0("PC2 (", round(s_70$importance[2,2]*100, 1), "% variance explained)"),
+       y = paste0("PC3 (", round(s_70$importance[2,3]*100, 1), "% variance explained)"))
+
+pc_34_70 <- ggplot(data = alt_x_70) +
+  geom_point(aes(x = PC3, y = PC4, color = locality), alpha = 0.7) +
+  scale_color_manual(values = pca_pal, guide = "none") +
+  labs(x = paste0("PC3 (", round(s_70$importance[2,3]*100, 1), "% variance explained)"),
+       y = paste0("PC4 (", round(s_70$importance[2,4]*100, 1), "% variance explained)"))
+
+pc_45_70 <- ggplot(data = alt_x_70) +
+  geom_point(aes(x = PC4, y = PC5, color = locality), alpha = 0.7) +
+  scale_color_manual(values = pca_pal, guide = "none") +
+  labs(x = paste0("PC4 (", round(s_70$importance[2,4]*100, 1), "% variance explained)"),
+       y = paste0("PC5 (", round(s_70$importance[2,5]*100, 1), "% variance explained)"))
+
+
+pca_plot_ancestral_70 <- pc_0_12_70 + 
+  pc_0_23_70 + 
+  pc_0_34_70 + 
+  pc_0_45_70 + 
+  plot_layout(ncol = 2,
+              guides = "collect")
+
+pca_plot_imputed_70 <- pc_12_70 +
+  pc_23_70 +
+  pc_34_70 +
+  pc_45_70 +
+  plot_layout(ncol = 2,
+              guides = "collect")
+
+
+pca_plot_imputed_70
+pca_plot_ancestral_70
+```
+
+```{r}
+alt_0_x_50 <- read_csv(here("output", "spreadsheets", "pca_fig_alt_0_x_50.csv"))
+
+s_0_50 <- read_rds(here("output", "rds_objects", "pca_fig_s_0_50.rds"))
+
+alt_x_50 <- read_csv(here("output", "spreadsheets", "pca_fig_alt_x_50.csv"))
+
+s_50 <- read_rds(here("output", "rds_objects", "pca_fig_s_50.rds"))
+
+pc_0_12_50 <- ggplot(data = alt_0_x_50) +
+  geom_point(aes(x = PC1, y = PC2, color = locality)) +
+  scale_color_manual(values = pca_pal) +
+  labs(x = paste0("PC1 (", round(s_0_50$importance[2,1]*100, 1), "% variance explained)"),
+       y = paste0("PC2 (", round(s_0_50$importance[2,2]*100, 1), "% variance explained)"),
+       title = "C) Ancestral allele \n (50% complete)")
+
+pc_0_23_50 <- ggplot(data = alt_0_x_50) +
+  geom_point(aes(x = PC2, y = PC3, color = locality)) +
+  scale_color_manual(values = pca_pal) +
+  labs(x = paste0("PC2 (", round(s_0_50$importance[2,2]*100, 1), "% variance explained)"),
+       y = paste0("PC3 (", round(s_0_50$importance[2,3]*100, 1), "% variance explained)"))
+
+pc_0_34_50 <- ggplot(data = alt_0_x_50) +
+  geom_point(aes(x = PC3, y = PC4, color = locality)) +
+  scale_color_manual(values = pca_pal) +
+  labs(x = paste0("PC3 (", round(s_0_50$importance[2,3]*100, 1), "% variance explained)"),
+       y = paste0("PC4 (", round(s_0_50$importance[2,4]*100, 1), "% variance explained)"))
+
+pc_0_45_50 <- ggplot(data = alt_0_x_50) +
+  geom_point(aes(x = PC4, y = PC5, color = locality)) +
+  scale_color_manual(values = pca_pal) +
+  labs(x = paste0("PC4 (", round(s_0_50$importance[2,4]*100, 1), "% variance explained)"),
+       y = paste0("PC5 (", round(s_0_50$importance[2,5]*100, 1), "% variance explained)"))
+
+
+pc_12_50 <- ggplot(data = alt_x_50) +
+  geom_point(aes(x = PC1, y = PC2, color = locality), alpha = 0.7) +
+  scale_color_manual(values = pca_pal) +
+  labs(x = paste0("PC1 (", round(s_50$importance[2,1]*100, 1), "% variance explained)"),
+       y = paste0("PC2 (", round(s_50$importance[2,2]*100, 1), "% variance explained)"),
+       title = "D) Imputed alleles \n (50% complete)")
+
+pc_23_50 <- ggplot(data = alt_x_50) +
+  geom_point(aes(x = PC2, y = PC3, color = locality), alpha = 0.7) +
+  scale_color_manual(values = pca_pal, guide = "none") +
+  labs(x = paste0("PC2 (", round(s_50$importance[2,2]*100, 1), "% variance explained)"),
+       y = paste0("PC3 (", round(s_50$importance[2,3]*100, 1), "% variance explained)"))
+
+pc_34_50 <- ggplot(data = alt_x_50) +
+  geom_point(aes(x = PC3, y = PC4, color = locality), alpha = 0.7) +
+  scale_color_manual(values = pca_pal, guide = "none") +
+  labs(x = paste0("PC3 (", round(s_50$importance[2,3]*100, 1), "% variance explained)"),
+       y = paste0("PC4 (", round(s_50$importance[2,4]*100, 1), "% variance explained)"))
+
+pc_45_50 <- ggplot(data = alt_x_50) +
+  geom_point(aes(x = PC4, y = PC5, color = locality), alpha = 0.7) +
+  scale_color_manual(values = pca_pal, guide = "none") +
+  labs(x = paste0("PC4 (", round(s_50$importance[2,4]*100, 1), "% variance explained)"),
+       y = paste0("PC5 (", round(s_50$importance[2,5]*100, 1), "% variance explained)"))
+
+
+pca_plot_ancestral_50 <- pc_0_12_50 + 
+  pc_0_23_50 + 
+  pc_0_34_50 + 
+  pc_0_45_50 + 
+  plot_layout(ncol = 2,
+              guides = "collect")
+
+pca_plot_imputed_50 <- pc_12_50 +
+  pc_23_50 +
+  pc_34_50 +
+  pc_45_50 +
+  plot_layout(ncol = 2,
+              guides = "collect")
+
+
+pca_plot_imputed_50
+pca_plot_ancestral_50
+```
+
+
+```{r, eval=FALSE}
+ggsave(filename = here("output", "figures", "pca_fig_ancestral.pdf"), 
+       plot = pca_plot_ancestral_70, 
+       width = 169,
+       units = "mm")
+
+ggsave(filename = here("output", "figures", "pca_fig_imputed.pdf"), 
+       plot = pca_plot_imputed_70, 
+       width = 169,
+       units = "mm")
+
+ggsave(filename = here("output", "figures", "pca_fig_ancestral_50.pdf"), 
+       plot = pca_plot_ancestral_50, 
+       width = 169,
+       units = "mm")
+
+ggsave(filename = here("output", "figures", "pca_fig_imputed_50.pdf"), 
+       plot = pca_plot_imputed_50, 
+       width = 169,
+       units = "mm")
+```
+
+### Admixture Fig
+sNMF results illustrating the best K and the K used for demographic analysis. Localities are sorted in descending order by latitude to give a sense of geography.
+
+Plot the cross-validation error. K=5 has the lowest cross-validation error, so we're using K=5 for the main figure. 
+
+```{r}
+cv_error <- read_csv(here("output", "admixture", "cv_results.csv"))
+
+cv_plot <- cv_error %>% 
+  ggplot(aes(x = k, y = cv_error)) +
+  geom_line() + 
+  geom_point() +
+  labs(x = "K", y = "Cross-validation error") +
+  theme_bw() +
+  theme(panel.grid = element_blank())
+
+cv_plot
+```
+
+
+Read in Q matrix data frames and assign the original locality names to the coordinates. 
+
+For plotting, I need to make the data frame longer, which I'm doing here as well.  
+
+```{r}
+pops_df <- read_csv(here("data", "pops_file.csv")) %>% 
+  mutate(
+    locality = case_when(
+      near(longitude, -105.0444, tol = 0.0001) ~ "ST",
+      near(longitude, -105.2503, tol = 0.0001) ~ "PC",
+      near(longitude, -105.0980, tol = 0.0001) ~ "LG",
+      near(longitude, -104.8789, tol = 0.0001) ~ "P-35",
+      near(longitude, -104.8027, tol = 0.0001) ~ "PZ",
+      near(longitude, -104.5181, tol = 0.0001) ~ "CH",
+      near(longitude, -104.7663, tol = 0.0001) ~ "PT",
+      near(longitude, -104.9325, tol = 0.0001) ~ "LS",
+      near(longitude, -104.8500, tol = 0.0001) ~ "P-30"
+    ) %>% as.factor()
+  ) 
+
+locs <- pops_df %>% 
+  filter(!duplicated(locality))
+
+k5_table <- read_table(here("output", "admixture", "missing_70_thin.5.Q"), col_names = paste0("P", 1:5))
+
+k5_df <- bind_cols(pops_df, k5_table) %>% 
+  pivot_longer(cols = starts_with("P", ignore.case = FALSE),
+               names_to = "k",
+               values_to = "q") %>% 
+  mutate(ind = fct_reorder(individuals, desc(q)),
+         locality = fct_reorder(locality, desc(latitude)))
+
+```
+
+```{r}
+# make a bar chart of assignment probabilities
+k5_plot <- k5_df %>% 
+  ggplot() +
+  # width = 1 removes whitespace between bars
+  geom_col(aes(x = individuals, y = q, fill = k), width = 1) +
+  # order and label bars by locality
+  facet_grid(~locality, scales = 'free', space = 'free') +
+  scale_fill_manual(values = k5_pal) +
+  labs(fill = "Population") +
+  theme_minimal() +
+  # some formatting details to make it pretty
+  theme(panel.spacing.x = unit(0, "lines"),
+        axis.line = element_blank(),
+        axis.text = element_blank(),
+        strip.background = element_rect(fill = "transparent", color = "black"),
+        panel.background = element_blank(),
+        axis.title = element_blank(),
+        panel.grid = element_blank()
+        )
+
+k5_plot
+```
+
+
+This is a bar chart that indicates the proportion of individuals within a locality assigned to particular populations. I'm using Inkscape to add this below each section of the sNMF plot to indicate the proportion of each assigned population present at each locality.  
+
+```{r}
+# calculate the proportion of assigned population per locality and reformat the data for plotting
+k5_prop <- k5_df %>%
+  # assign an individual to the population they have the largest ancestry proportion in
+  group_by(individuals) %>% 
+  filter(q == max(q)) %>% 
+  group_by(locality) %>% 
+  summarize(P1 = sum(k == "P1") / length(k),
+            P2 = sum(k == "P2") / length(k),
+            P3 = sum(k == "P3") / length(k),
+            P4 = sum(k == "P4") / length(k),
+            P5 = sum(k == "P5") / length(k)) %>% 
+  pivot_longer(cols = starts_with("P"),
+               names_to = "prop_pop",
+               values_to = "prop")
+
+
+# simple plot to extract bars from
+k5_prop_plot <- ggplot(data = k5_prop) +
+  geom_col(aes(x = locality, y = prop, fill = prop_pop)) +
+  scale_fill_manual(values = k5_pal) +
+  theme_minimal() +
+  theme(panel.grid = element_blank())
+
+
+k5_prop_plot
+
+```
+
+
+To be clear, I'm modifying this to place the bars directly under each locality in the sNMF plot.  It's too much trouble to do this in R. This version is saved as `output/figures/admixture_prelim.svg`.
+```{r}
+admixture_fig <- k5_plot / k5_prop_plot + guides(fill = "none")
+
+admixture_fig
+```
+
+```{r}
+ggsave(filename = here("output", "figures", "admixture_prelim.svg"),
+       plot = admixture_fig, 
+       device = "svg",
+       width = 189,
+       units = "mm")
+```
+
+#### Supp Fig
+I'm going to reproduce this as a supplementary figure, and only keep K=6 in the main text.  
+
+```{r, message = FALSE}
+
+k6_table <- read_table(here("output", "admixture", "missing_70_thin.6.Q"), col_names = paste0("P", 1:6))
+
+k6_df <- bind_cols(pops_df, k6_table) %>% 
+  pivot_longer(cols = starts_with("P", ignore.case = FALSE),
+               names_to = "k",
+               values_to = "q") %>% 
+  mutate(ind = fct_reorder(individuals, desc(q)),
+         locality = fct_reorder(locality, desc(latitude)))
+
+k7_table <- read_table(here("output", "admixture", "missing_70_thin.7.Q"), col_names = paste0("P", 1:7))
+
+k7_df <- bind_cols(pops_df, k7_table) %>% 
+  pivot_longer(cols = starts_with("P", ignore.case = FALSE),
+               names_to = "k",
+               values_to = "q") %>% 
+  mutate(ind = fct_reorder(individuals, desc(q)),
+         locality = fct_reorder(locality, desc(latitude)))
+
+
+# make a bar chart of assignment probabilities 
+k6_plot <- k6_df %>% 
+  ggplot() +
+  # width = 1 removes whitespace between bars
+  geom_col(aes(x = ind, y = q, fill = k), width = 1) +
+  # order and label bars by locality
+  facet_grid(~locality, scales = 'free', space = 'free') +
+  scale_fill_manual(values = k6_pal) +
+  labs(fill = "Population") +
+  theme_minimal() +
+  # some formatting details to make it pretty
+  theme(panel.spacing.x = unit(0, "lines"),
+        axis.line = element_blank(),
+        axis.text = element_blank(),
+        strip.background = element_rect(fill = "transparent", color = "black"),
+        panel.background = element_blank(),
+        axis.title = element_blank(),
+        panel.grid = element_blank()
+        )
+
+k7_plot <- k7_df %>% 
+  ggplot() +
+  # width = 1 removes whitespace between bars
+  geom_col(aes(x = ind, y = q, fill = k), width = 1) +
+  # order and label bars by locality
+  facet_grid(~locality, scales = 'free', space = 'free') +
+  scale_fill_manual(values = k7_pal) +
+  labs(fill = "Population") +
+  theme_minimal() +
+  # some formatting details to make it pretty
+  theme(panel.spacing.x = unit(0, "lines"),
+        axis.line = element_blank(),
+        axis.text = element_blank(),
+        strip.background = element_rect(fill = "transparent", color = "black"),
+        panel.background = element_blank(),
+        axis.title = element_blank(),
+        panel.grid = element_blank()
+        )
+
+
+k5_plot / k6_plot / k7_plot
+
+```
+
+```{r}
+supp_admixture <- k5_plot / k6_plot / k7_plot + plot_annotation(tag_levels = "A", tag_suffix = ")")
+
+supp_admixture
+```
+
+
+```{r}
+ggsave(filename = here("output", "figures", "supp_admixture_barplot.pdf"),
+       plot = supp_admixture, 
+       device = "pdf",
+       width = 300,
+       height = 200,
+       units = "mm")
+```
+
+### sNMF Fig
+sNMF results for comparison with ADMIXTURE. Localities are sorted in descending order by latitude to give a sense of geography.
+
+Read in Q matrix data frames and assign the original locality names to the coordinates. I'm using alpha = 10 because the cross entropy criterion is very slightly lower for the k values I'm visualizing. Really, the results between the two alpha values are nearly identical and I have to pick one, and this is the most objective way to do it.  
+
+For plotting, I need to make the data frame longer, which I'm doing here as well.  
+
+For some reason I didn't save the K=5 Q matrix as a data frame, so I'm grabbing that now. 
+```{r, snmf-obj}
+a10_snmf <- load.snmfProject(here("output", "snmf_a10", "genotypes_9_70.snmfProject"))
+
+# get Q-matrix with lowest CE
+a10_5_Q <- Q(a10_snmf, 5, 17)
+
+
+df_10_5 <- a10_5_Q %>%
+  as_tibble() %>%
+  rename_with( ~ str_replace(.x, "V", "P"), starts_with("V")) %>%
+  mutate(
+    latitude = pops$latitude,
+    longitude = pops$longitude,
+    ind = pops$individuals,
+    locality = case_when(
+      near(longitude, -105.0444, tol = 0.0001) ~ "ST",
+      near(longitude, -105.2503, tol = 0.0001) ~ "PC",
+      near(longitude, -105.0980, tol = 0.0001) ~ "LG",
+      near(longitude, -104.8789, tol = 0.0001) ~ "P-35",
+      near(longitude, -104.8027, tol = 0.0001) ~ "PZ",
+      near(longitude, -104.5181, tol = 0.0001) ~ "CH",
+      near(longitude, -104.7663, tol = 0.0001) ~ "PT",
+      near(longitude, -104.9325, tol = 0.0001) ~ "LS",
+      near(longitude, -104.8500, tol = 0.0001) ~ "P-30"
+    ) %>% as.factor()
+  ) %>%
+  pivot_longer(
+    cols = starts_with("P", ignore.case = FALSE),
+    names_to = "k",
+    values_to = "q"
+  ) %>%
+  mutate(ind = fct_reorder(ind, desc(q)),
+         locality = fct_reorder(locality, desc(latitude))) %>% 
+  group_by(ind) %>% 
+  mutate(pop_id = k[which.max(q)])
+
+```
+
+
+```{r}
+df_10_6 <- read_csv(here("output", "snmf_q_dfs", "df_10_6.csv")) %>% 
+  mutate(locality = case_when(
+      near(longitude, -105.0444, tol = 0.0001) ~ "ST",
+      near(longitude, -105.2503, tol = 0.0001) ~ "PC",
+      near(longitude, -105.0980, tol = 0.0001) ~ "LG",
+      near(longitude, -104.8789, tol = 0.0001) ~ "P-35",
+      near(longitude, -104.8027, tol = 0.0001) ~ "PZ",
+      near(longitude, -104.5181, tol = 0.0001) ~ "CH",
+      near(longitude, -104.7663, tol = 0.0001) ~ "PT",
+      near(longitude, -104.9325, tol = 0.0001) ~ "LS",
+      near(longitude, -104.8500, tol = 0.0001) ~ "P-30"
+    ) %>% as.factor()) %>% 
+  pivot_longer(cols = starts_with("P", ignore.case = FALSE),
+               names_to = "k",
+               values_to = "q") %>% 
+  mutate(ind = fct_reorder(ind, desc(q)),
+         locality = fct_reorder(locality, desc(latitude)))
+
+df_10_7 <- read_csv(here("output", "snmf_q_dfs", "df_10_7.csv")) %>% 
+  mutate(locality = case_when(
+      near(longitude, -105.0444, tol = 0.0001) ~ "ST",
+      near(longitude, -105.2503, tol = 0.0001) ~ "PC",
+      near(longitude, -105.0980, tol = 0.0001) ~ "LG",
+      near(longitude, -104.8789, tol = 0.0001) ~ "P-35",
+      near(longitude, -104.8027, tol = 0.0001) ~ "PZ",
+      near(longitude, -104.5181, tol = 0.0001) ~ "CH",
+      near(longitude, -104.7663, tol = 0.0001) ~ "PT",
+      near(longitude, -104.9325, tol = 0.0001) ~ "LS",
+      near(longitude, -104.8500, tol = 0.0001) ~ "P-30"
+    ) %>% as.factor()) %>% 
+  pivot_longer(cols = starts_with("P", ignore.case = FALSE),
+               names_to = "k",
+               values_to = "q") %>% 
+  mutate(ind = fct_reorder(ind, desc(q)),
+         locality = fct_reorder(locality, desc(latitude)))
+
+```
+
+I'm going to reproduce this as a supplementary figure, and only keep K=6 in the main text.  
+
+```{r, message = FALSE}
+
+# get lat-longs for ordering the localities from north to south and assign the coordinates to the correct locality
+locs <- read_csv(here("data", "sample_latlongs.csv")) %>% 
+  mutate(
+    locality = case_when(
+      near(longitude, -105.0444, tol = 0.0001) ~ "ST",
+      near(longitude, -105.2503, tol = 0.0001) ~ "PC",
+      near(longitude, -105.0980, tol = 0.0001) ~ "LG",
+      near(longitude, -104.8789, tol = 0.0001) ~ "P-35",
+      near(longitude, -104.8027, tol = 0.0001) ~ "PZ",
+      near(longitude, -104.5181, tol = 0.0001) ~ "CH",
+      near(longitude, -104.7663, tol = 0.0001) ~ "PT",
+      near(longitude, -104.9325, tol = 0.0001) ~ "LS",
+      near(longitude, -104.8500, tol = 0.0001) ~ "P-30"
+    ) %>% as.factor()
+  ) %>% 
+  filter(!duplicated(locality))
+
+# make a bar chart of assignment probabilities (only annotating k=3)
+k5_10_plot <- df_10_5 %>% 
+  ggplot() +
+  # width = 1 removes whitespace between bars
+  geom_col(aes(x = ind, y = q, fill = k), width = 1) +
+  # order and label bars by locality
+  facet_grid(~locality, scales = 'free', space = 'free') +
+  scale_fill_manual(values = k5_pal) +
+  labs(fill = "Population") +
+  theme_minimal() +
+  # some formatting details to make it pretty
+  theme(panel.spacing.x = unit(0, "lines"),
+        axis.line = element_blank(),
+        axis.text = element_blank(),
+        strip.background = element_rect(fill = "transparent", color = "black"),
+        panel.background = element_blank(),
+        axis.title = element_blank(),
+        panel.grid = element_blank()
+        )
+
+# make a bar chart of assignment probabilities (only annotating k=3)
+k6_10_plot <- df_10_6 %>% 
+  ggplot() +
+  # width = 1 removes whitespace between bars
+  geom_col(aes(x = ind, y = q, fill = k), width = 1) +
+  # order and label bars by locality
+  facet_grid(~locality, scales = 'free', space = 'free') +
+  scale_fill_manual(values = k6_pal) +
+  labs(fill = "Population") +
+  theme_minimal() +
+  # some formatting details to make it pretty
+  theme(panel.spacing.x = unit(0, "lines"),
+        axis.line = element_blank(),
+        axis.text = element_blank(),
+        strip.background = element_rect(fill = "transparent", color = "black"),
+        panel.background = element_blank(),
+        axis.title = element_blank(),
+        panel.grid = element_blank()
+        )
+
+k7_10_plot <- df_10_7 %>% 
+  ggplot() +
+  # width = 1 removes whitespace between bars
+  geom_col(aes(x = ind, y = q, fill = k), width = 1) +
+  # order and label bars by locality
+  facet_grid(~locality, scales = 'free', space = 'free') +
+  scale_fill_manual(values = k7_pal) +
+  labs(fill = "Population") +
+  theme_minimal() +
+  # some formatting details to make it pretty
+  theme(panel.spacing.x = unit(0, "lines"),
+        axis.line = element_blank(),
+        axis.text = element_blank(),
+        strip.background = element_rect(fill = "transparent", color = "black"),
+        panel.background = element_blank(),
+        axis.title = element_blank(),
+        panel.grid = element_blank()
+        )
+
+k5_10_plot / k6_10_plot / k7_10_plot
+
+```
+
+This is a bar chart that indicates the proportion of individuals within a locality assigned to particular populations. I'm using Inkscape to add this below each section of the sNMF plot to indicate the proportion of each assigned population present at each locality.  
+
+```{r}
+# calculate the proportion of assigned population per locality and reformat the data for plotting
+k6_prop <- df_10_6 %>% 
+  group_by(locality) %>% 
+  summarize(P1 = sum(pop_id == "P1") / length(pop_id),
+            P2 = sum(pop_id == "P2") / length(pop_id),
+            P3 = sum(pop_id == "P3") / length(pop_id),
+            P4 = sum(pop_id == "P4") / length(pop_id),
+            P5 = sum(pop_id == "P5") / length(pop_id),
+            P6 = sum(pop_id == "P6") / length(pop_id)) %>% 
+  pivot_longer(cols = starts_with("P"),
+               names_to = "prop_pop",
+               values_to = "prop")
+
+
+# simple plot to extract bars from
+k6_prop_plot <- ggplot(data = k6_prop) +
+  geom_col(aes(x = locality, y = prop, fill = prop_pop)) +
+  scale_fill_manual(values = k6_pal) +
+  theme_minimal() +
+  theme(panel.grid = element_blank())
+
+
+k6_prop_plot
+
+```
+
+Repeating the above for supplemental figures for K=5 and 7 for comparison with ADMIXTURE results
+```{r}
+# calculate the proportion of assigned population per locality and reformat the data for plotting
+k5_prop <- df_10_5 %>% 
+  group_by(locality) %>% 
+  summarize(P1 = sum(pop_id == "P1") / length(pop_id),
+            P2 = sum(pop_id == "P2") / length(pop_id),
+            P3 = sum(pop_id == "P3") / length(pop_id),
+            P4 = sum(pop_id == "P4") / length(pop_id),
+            P5 = sum(pop_id == "P5") / length(pop_id)) %>% 
+  pivot_longer(cols = starts_with("P"),
+               names_to = "prop_pop",
+               values_to = "prop")
+
+
+# simple plot to extract bars from
+k5_prop_plot <- ggplot(data = k5_prop) +
+  geom_col(aes(x = locality, y = prop, fill = prop_pop)) +
+  scale_fill_manual(values = k5_pal) +
+  theme_minimal() +
+  theme(panel.grid = element_blank())
+
+# calculate the proportion of assigned population per locality and reformat the data for plotting
+k7_prop <- df_10_7 %>% 
+  group_by(locality) %>% 
+  summarize(P1 = sum(pop_id == "P1") / length(pop_id),
+            P2 = sum(pop_id == "P2") / length(pop_id),
+            P3 = sum(pop_id == "P3") / length(pop_id),
+            P4 = sum(pop_id == "P4") / length(pop_id),
+            P5 = sum(pop_id == "P5") / length(pop_id),
+            P6 = sum(pop_id == "P6") / length(pop_id),
+            P7 = sum(pop_id == "P7") / length(pop_id)) %>% 
+  pivot_longer(cols = starts_with("P"),
+               names_to = "prop_pop",
+               values_to = "prop")
+
+
+# simple plot to extract bars from
+k7_prop_plot <- ggplot(data = k7_prop) +
+  geom_col(aes(x = locality, y = prop, fill = prop_pop)) +
+  scale_fill_manual(values = k7_pal) +
+  theme_minimal() +
+  theme(panel.grid = element_blank())
+```
+
+```{r, eval=FALSE}
+ggsave(filename = here("output", "figures", "supp_snmf_k5_prop_pop.svg"),
+       plot = k5_prop_plot, 
+       device = "svg",
+       width = 300,
+       height = 200,
+       units = "mm")
+
+ggsave(filename = here("output", "figures", "supp_snmf_k7_prop_pop.svg"),
+       plot = k7_prop_plot, 
+       device = "svg",
+       width = 300,
+       height = 200,
+       units = "mm")
+```
+
+
+NOTE: I had to manually replace the `projDir` path with `paste0(here("output", "snmf_a10"), "/")` because I ran sNMF on an rstudio cloud instance and sNMF hardcodes the path to your project according to the directory you first ran the analysis. If you reran the sNMF analysis in your own working directory this shouldn't be a problem, but if you're loading my analysis, you will have to change the `projDir` to the path where you put the sNMF project. Annoying.  
+
+```{r}
+snmf_obj_a10 <- LEA::load.snmfProject(here("output", "snmf_a10", "genotypes_9_70.snmfProject"))
+
+# plot cross-entropy criterion of all runs of the project
+svg(filename = here("output", "figures", "snmf_fig_cross-entropy.svg"),
+    width = 10,
+    height = 6,
+    pointsize = 16)
+plot(snmf_obj_a10, cex = 1.2, col = "black", pch = 19, y = "Cross-entropy")
+dev.off()
+plot(snmf_obj_a10, cex = 1.2, col = "black", pch = 19, y = "Cross-entropy")
+```
+
+#### Supp Fig
+
+```{r}
+supp_snmf <- k5_10_plot / k6_10_plot / k7_10_plot + plot_annotation(tag_levels = "A", tag_suffix = ")")
+
+supp_snmf
+```
+
+Write to file  
+```{r}
+ggsave(filename = here("output", "figures", "supp_snmf_barplot.pdf"),
+       plot = supp_snmf, 
+       device = "pdf",
+       width = 300,
+       height = 200,
+       units = "mm")
+```
+
+
+### Map fig
+I'm using the K=5 Admixture proportions to map pie charts of the admixture proportions from the Admixture figure onto the map. This map requires the `k5_df` and `k5_prop` objects, so run the `Admixture fig` code to get this if you haven't already. 
+```{r}
+k5_df <- k5_df %>% 
+  select(locality, longitude, latitude) %>% 
+  filter(!duplicated(locality)) 
+
+k5_pie_df <- k5_prop %>% 
+  pivot_wider(id_cols = locality,
+              names_from = prop_pop, 
+              values_from = prop
+              ) %>% 
+  left_join(k5_df,
+            by = "locality") 
+
+k5_pie_sf <- k5_pie_df %>% st_as_sf(coords = c("longitude", "latitude"),
+           crs = 4326, 
+           remove = FALSE)
+
+k5_pie_trans <- k5_pie_sf %>% 
+  st_transform(crs = "+proj=merc +lon_0=0 +lat_ts=0 +x_0=0 +y_0=0 +a=6378137 +b=6378137 +units=m +no_defs")
+
+trans_coords <- st_coordinates(k5_pie_trans)
+
+k5_pie_trans <- k5_pie_trans %>% 
+  mutate(longitude = trans_coords[,1],
+         latitude = trans_coords[,2])
+```
+
+I need to acquire the elevation data for the map. I've included the code to extract it, but this can take a long time, so I also wrote it to the `data/elevation` folder
+```{r, eval = FALSE}
+gecko_elevation <- get_aws_terrain(as(k5_pie_sf, "Spatial"),
+                                   z = 9,
+                                   expand = 1,
+                                   prj = "+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0") %>% 
+  raster::projectRaster(crs = "+proj=merc +lon_0=0 +lat_ts=0 +x_0=0 +y_0=0 +a=6378137 +b=6378137 +units=m +no_defs")
+
+writeRaster(gecko_elevation, here("data", "elevation", "elevation.tif"), overwrite = TRUE)
+```
+
+Read the elevation data in and crop it to the gecko localities.
+```{r}
+gecko_elevation <- raster(here("data", "elevation", "elevation.tif")) 
+  
+
+gecko_elevation <- gecko_elevation %>% 
+  crop(y = extent(k5_pie_trans) + 10000) %>% 
+  rasterToPolygons() %>% 
+  st_as_sf() %>% 
+  # remove sea and one weird outlier (the next highest elevation is 2599 m, so this is definitely an outlier)
+  filter(elevation > 5.623082e-07, elevation < 8220)
+```
+
+
+
+Here's the map! Using the proportion of each population assigned to each locality as locality markers.
+```{r}
+# A basemap of Mexican states for plotting
+states <-
+  rnaturalearth::ne_states(country = "Mexico", returnclass = "sf") %>%
+  st_transform(crs = "+proj=merc +lon_0=0 +lat_ts=0 +x_0=0 +y_0=0 +a=6378137 +b=6378137 +units=m +no_defs")
+
+states_bbox <- st_bbox(states)
+states_bbox["xmax"] <- states_bbox["xmax"] + 100000
+states_bbox["ymax"] <- states_bbox["ymax"] + 100000
+states_bbox["ymin"] <- states_bbox["ymin"] - 100000
+
+states_bbox_sf <- st_as_sfc(states_bbox)
+
+inset_mex <- ggplot() + 
+  geom_sf(data = states_bbox_sf, fill = "white", color = "black") +
+  geom_sf(data = states, fill = "white") + 
+  geom_sf(data = st_as_sfc(st_bbox(k5_pie_trans)), fill = NA, color = "red", size = 1.2) +
+  theme_void()
+
+map_plot <- ggplot() +
+  geom_sf(data = gecko_elevation %>% filter(elevation > 0.1), aes(color = elevation, fill = elevation)) +
+  ggsn::scalebar(data = gecko_elevation, 
+                 transform = FALSE, 
+                 dist_unit = "km", 
+                 dist = 10,
+                 st.size = 3,
+                 location = "bottomleft",
+                 anchor = c(x = -11716357, y = 2185208)) +
+  scale_color_gradientn(colors = brewer.pal(9, "Greys"),
+                        trans = "log10") +
+  scale_fill_gradientn(colors = brewer.pal(9, "Greys"),
+                       trans = "log10",
+                       labels = scales::number_format(accuracy = 2)) +
+  labs(fill = "Elevation (m)") +
+  ggnewscale::new_scale_fill() +
+  geom_scatterpie(data = k5_pie_trans %>% as_tibble(), 
+                  aes(x = longitude,
+                      y = latitude,
+                      group = locality),
+                  cols = paste0("P", 1:5)) +
+  geom_label_repel(data = k5_pie_trans %>% as_tibble(), 
+                   aes(x = longitude,
+                       y = latitude,
+                       label = locality),
+                   box.padding = 0.5,
+                   segment.alpha = 0.0) +
+  coord_sf(xlim = c(st_bbox(k5_pie_trans)[1],
+                    st_bbox(k5_pie_trans)[3]),
+           ylim = c(st_bbox(k5_pie_trans)[2],
+                    st_bbox(k5_pie_trans)[4])) +
+  scale_fill_manual(values = k5_pal) +
+  guides(color = "none", fill = "none") +
+  labs(fill = "Population",
+       x = NULL,
+       y = NULL) +
+  ggspatial::annotation_north_arrow(pad_x = unit(1.35, "cm"), pad_y = unit(1.15, "cm"), width = unit(1, "cm"), height = unit(1, "cm")) +
+  theme_minimal() + 
+  theme(panel.grid = element_blank())
+  
+map_full <- ggdraw() +
+  draw_plot(map_plot) +
+  draw_plot(inset_mex, x = 0.50, y = 0.70, width = 0.3, height = 0.3)
+
+map_full
+
+```
+
+
+```{r, eval=FALSE}
+ggsave(filename = here("output", "figures", "map_figure.pdf"),
+       map_full,
+       dpi = 300,
+       width = 169,
+       height = 120,
+       units = "mm")
+```
+
+
+
+### Thresholded SDM Fig.
+Thresholded plot of the the current and LGM predictions. I'm using a threshold for visualization because what we're interested in seeing is overall range changes from LGM to today.
+
+```{r, warning=FALSE, message=FALSE, fig.width=5, fig.height=11.1}
+pred_p10 <- raster(here("output", "rasters", "thresh_p10_current_pred.tif"))
+lgm_p10 <- raster(here("output", "rasters", "thresh_p10_lgm_pred.tif"))
+
+# adding site names from Supp Table S1 in the manuscript
+occs_all <- locs %>%
+  mutate(
+    site_name = case_when(
+      near(longitude, -105.0444, tol = 0.0001) ~ "ST",
+      # the near() function is more forgiving than == when comparing doubles
+      near(longitude, -105.2503, tol = 0.0001) ~ "PC",
+      near(longitude, -105.0980, tol = 0.0001) ~ "LG",
+      near(longitude, -104.8789, tol = 0.0001) ~ "P-35",
+      near(longitude, -104.8027, tol = 0.0001) ~ "PZ",
+      near(longitude, -104.5181, tol = 0.0001) ~ "CH",
+      near(longitude, -104.7663, tol = 0.0001) ~ "PT",
+      near(longitude, -104.9325, tol = 0.0001) ~ "LS",
+      near(longitude, -104.8500, tol = 0.0001) ~ "P-30"
+    )
+  )
+
+# A basemap of Mexican states for plotting
+states <-
+  rnaturalearth::ne_states(country = "Mexico", returnclass = "sf")
+states <-
+  st_transform(states, crs = '+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs')
+
+# set the coordinate reference system for both raster layers
+crs(pred_p10) <- '+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs'
+crs(lgm_p10) <- '+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs'
+
+
+# set beginning and end lines for colima label
+line_df <- tibble(x1 = -104.16, y1 = 18.71, x2 = -104, y2 = 18.85)
+
+### Current SDM ####
+pred_p10_sf <- pred_p10 %>% 
+  raster::rasterToPolygons() %>% 
+  st_as_sf()
+
+current_map <- ggplot() +
+  geom_sf(data = pred_p10_sf, aes(fill = thresh_p10_current_pred, color = thresh_p10_current_pred)) +
+  scale_fill_gradient(low = "#91CCD9",
+                      high = "#2F6673",
+                      na.value = "transparent") +
+  scale_color_gradient(low = "#91CCD9",
+                      high = "#2F6673",
+                      na.value = "transparent") +
+  geom_sf(data = states, fill = "transparent") +
+  geom_point(
+    data = occs_all,
+    aes(x = longitude, y = latitude),
+    shape = 21,
+    color = "white",
+    fill = "black",
+    size = 2.5
+  ) +
+  ggrepel::geom_label_repel(data = occs_all,
+            aes(x = longitude, y = latitude,
+                label = site_name),
+            color = "black",
+            segment.color = "black", 
+            size = 3,
+            label.padding = 0.1) +
+  coord_sf(xlim = c(-105.6, -103.42), ylim = c(18.4, 20.6)) +
+  geom_sf_label(
+    data = states,
+    aes(label = name),
+    nudge_x = -0.5,
+    nudge_y = -0.5
+  ) +
+  geom_segment(data = line_df, aes(
+    x = x1,
+    y = y1,
+    xend = x2,
+    yend = y2
+  )) +
+  labs(fill = "Suitability") +
+  theme_bw() +
+  theme(legend.position = "none",
+        axis.title = element_blank(),
+        panel.grid = element_blank())
+
+#### LGM SDM ####
+lgm_p10_sf <- lgm_p10 %>%
+  raster::rasterToPolygons() %>%
+  st_as_sf()
+
+lgm_map <- ggplot() +
+  geom_sf(data = lgm_p10_sf, aes(fill = thresh_p10_lgm_pred, color = thresh_p10_lgm_pred)) +
+  scale_fill_gradient(low = "#91CCD9",
+                      high = "#2F6673",
+                      na.value = "transparent") +
+  scale_color_gradient(low = "#91CCD9",
+                      high = "#2F6673",
+                      na.value = "transparent") +
+  geom_sf(data = states, fill = "transparent") +
+  coord_sf(xlim = c(-105.6, -103.42), ylim = c(18.4, 20.6)) +
+  geom_sf_label(
+    data = states,
+    aes(label = name),
+    nudge_x = -0.5,
+    nudge_y = -0.5
+  ) +
+  geom_segment(data = line_df, aes(
+    x = x1,
+    y = y1,
+    xend = x2,
+    yend = y2
+  )) +
+  geom_point(
+    data = occs_all,
+    aes(x = longitude, y = latitude),
+    shape = 21,
+    color = "white",
+    fill = "black",
+    size = 2.5
+  ) +
+  ggrepel::geom_label_repel(data = occs_all,
+            aes(x = longitude, y = latitude,
+                label = site_name),
+            color = "black",
+            segment.color = "black", 
+            size = 3,
+            label.padding = 0.1) +
+  labs(
+       fill = "Suitability"
+       ) +
+  theme_bw() +
+  theme(legend.position = "none",
+        axis.title = element_blank(),
+        panel.grid = element_blank())
+
+
+pred_combo <-
+  current_map / lgm_map +
+  plot_annotation(
+    tag_levels = "A",
+    tag_suffix = ")",
+    theme = theme(
+      plot.margin = grid::unit(c(0, 0, 0, 0), "mm"),
+      panel.grid.minor = element_blank(),
+      panel.background = element_rect(fill = "transparent", colour = NA),
+      plot.background = element_rect(fill = "transparent", colour = NA)
+    )
+  )
+
+pred_combo
+```
+
+```{r, eval=FALSE}
+
+ggsave(pred_combo, 
+       filename = "sdm_projections.pdf", 
+       device = "pdf",
+       units = "mm",
+       path = fig_out,
+       bg = "transparent"
+       )
+```
+
+
+### MESS maps
+
+```{r, warning=FALSE, message=FALSE, fig.width=7, fig.height=11.1}
+
+# current mess
+current_mess <- raster(here("output", "rasters", "current_mess.tif"))
+
+current_mess_sf <- current_mess %>%
+  raster::rasterToPolygons() %>%
+  st_as_sf()
+
+current_mess_plot <- ggplot() +
+  geom_sf(data = current_mess_sf, aes(fill = current_mess, color = current_mess)) +
+  scale_fill_gradient2(na.value = "transparent") +
+  scale_color_gradient2(na.value = "transparent") +
+  geom_sf(data = states, fill = "transparent") +
+  coord_sf(xlim = c(-105.6, -103.42), ylim = c(18.4, 20.6)) +
+  geom_sf_label(
+    data = states,
+    aes(label = name),
+    nudge_x = -0.5,
+    nudge_y = -0.5
+  ) +
+  geom_segment(data = line_df, aes(
+    x = x1,
+    y = y1,
+    xend = x2,
+    yend = y2
+  )) +
+  geom_point(
+    data = occs_all,
+    aes(x = longitude, y = latitude),
+    shape = 21,
+    color = "white",
+    fill = "black",
+    size = 2.5
+  ) +
+  labs(fill = "MESS") +
+  guides(color = "none") +
+  theme_minimal() +
+  theme(axis.title = element_blank(),
+        panel.grid = element_blank())
+
+# lgm mess
+lgm_mess <- raster(here("output", "rasters", "lgm_mess.tif"))
+
+lgm_mess_sf <- lgm_mess %>%
+  raster::rasterToPolygons() %>%
+  st_as_sf()
+
+lgm_mess_plot <- ggplot() +
+  geom_sf(data = lgm_mess_sf, aes(fill = lgm_mess, color = lgm_mess)) +
+  scale_fill_gradient2(na.value = "transparent") +
+  scale_color_gradient2(na.value = "transparent") +
+  geom_sf(data = states, fill = "transparent") +
+  coord_sf(xlim = c(-105.6, -103.42), ylim = c(18.4, 20.6)) +
+  geom_sf_label(
+    data = states,
+    aes(label = name),
+    nudge_x = -0.5,
+    nudge_y = -0.5
+  ) +
+  geom_segment(data = line_df, aes(
+    x = x1,
+    y = y1,
+    xend = x2,
+    yend = y2
+  )) +
+  geom_point(
+    data = occs_all,
+    aes(x = longitude, y = latitude),
+    shape = 21,
+    color = "white",
+    fill = "black",
+    size = 2.5
+  ) +
+  labs(
+       x = "Longitude",
+       y = "Latitude",
+       fill = "MESS"
+       ) +
+  guides(color = "none") +
+  theme_minimal() +
+  theme(axis.title = element_blank(),
+        panel.grid = element_blank())
+
+mess_combo <-
+  current_mess_plot / lgm_mess_plot +
+  plot_annotation(
+    tag_levels = "A",
+    tag_suffix = ")",
+    theme = theme(
+      plot.margin = grid::unit(c(0, 0, 0, 0), "mm"),
+      panel.grid.minor = element_blank(),
+      panel.background = element_rect(fill = "transparent", colour = NA),
+      plot.background = element_rect(fill = "transparent", colour = NA)
+    )
+  )
+
+mess_combo
+```
+
+
+```{r, eval=FALSE}
+ggsave(mess_combo,
+       filename = "supp_fig_mess.pdf",
+       device = "pdf",
+       width = 169,
+       units = "mm",
+       path = fig_out,
+       bg = "transparent"
+       )
+```
+
+
+### MMRR scatterplot
+
+```{r message=FALSE}
+geo_dist <- read.table(here("output", "spreadsheets", "geo_distance_matrix.txt")) %>% as.matrix()
+fst_mat <- read.table(here("output", "spreadsheets", "fst_matrix.txt")) %>% 
+  as.matrix()
+
+fst_mat <- fst_mat / (1 - fst_mat)
+
+commute_mat <- read.table(here("output", "spreadsheets", "commute_fc_1_10000_distance_matrix.txt")) %>% as.matrix()
+
+mmrr_obj <- read_rds(here("output", "mmrr_commute_1_10000_geo.rds"))
+
+
+mmrr_df_commute <- tibble(
+  geo_dist =  unfold(geo_dist)[,1],
+  commute_dist = unfold(commute_mat)[,1],
+  fst = unfold(fst_mat)[,1]
+) %>% 
+  mutate(mmrr_model = mmrr_obj$coefficients[2] * commute_dist + 
+           mmrr_obj$coefficients[3] * geo_dist)
+
+mmrr_plot <- ggplot(mmrr_df_commute, aes(x = mmrr_model, y = fst)) +
+  geom_point() +
+  geom_smooth(method = lm, se = FALSE, color = "black") +
+  labs(x = paste0("(", round(mmrr_obj$coefficients[2], 3), 
+  " * Forest Cover) + (", 
+  round(mmrr_obj$coefficients[3], 3),
+  " * Geo Distance)"), y = expression(F["ST"] / (1-F["ST"]))) +
+  scale_x_continuous(labels = function(x) x / 1000) +
+  theme_bw() +
+  theme(axis.text = element_text(size = 16), 
+        axis.title = element_text(size = 16),
+        panel.grid.minor = element_blank(),
+        plot.margin = margin(2, 3, 2, 2, "mm"))
+
+
+mmrr_plot
+```
+
+
+```{r, eval=FALSE}
+ggsave(mmrr_plot, 
+       filename = "mmrr_fig.pdf", 
+       device = "pdf",
+       width = 169,
+       height = 100,
+       units = "mm",
+       path = fig_out
+       )
+```
+
+#### FST pairwise map
+This is a plot of lines between localities, weighted by FST. This recycles some code from the above `MMRR scatterplot` figure.
+
+```{r}
+pops_df <- read_csv(here("data", "pops_file.csv")) %>% 
+  mutate(
+    locality = case_when(
+      near(longitude, -105.0444, tol = 0.0001) ~ "ST",
+      near(longitude, -105.2503, tol = 0.0001) ~ "PC",
+      near(longitude, -105.0980, tol = 0.0001) ~ "LG",
+      near(longitude, -104.8789, tol = 0.0001) ~ "P-35",
+      near(longitude, -104.8027, tol = 0.0001) ~ "PZ",
+      near(longitude, -104.5181, tol = 0.0001) ~ "CH",
+      near(longitude, -104.7663, tol = 0.0001) ~ "PT",
+      near(longitude, -104.9325, tol = 0.0001) ~ "LS",
+      near(longitude, -104.8500, tol = 0.0001) ~ "P-30"
+    ) %>% as.factor()
+  ) 
+
+# locs df with all info
+locs_unique <- pops_df %>% 
+  filter(!duplicated(locality))
+
+# df with pop ID
+locs_df <- locs_unique %>% 
+  select(-individuals, -locality) %>% 
+  mutate(pops = paste0("pop_", pops))
+
+# lat-long only
+locs <- locs_df %>% 
+  select(longitude, latitude)
+
+# call combinations of locality indices
+combs <- combn(1:nrow(locs),2,simplify = FALSE)
+
+# all combos of localities
+locs_combos <- map_df(combs,function(x){
+  df <- bind_cols(
+    locs_df[x[1],],locs_df[x[2],]
+  )
+  colnames(df) <- c("long_1","lat_1","pops_1","long_2", "lat_2", "pops_2")
+  return(df)
+})
+
+locs_1 <- locs_combos %>% 
+  select(long = long_1, lat = lat_1) %>% 
+  st_as_sf(coords = c("long", "lat"), crs = 4326)
+
+locs_2 <- locs_combos %>% 
+  select(long = long_2, lat = lat_2) %>% 
+  st_as_sf(coords = c("long", "lat"), crs = 4326)
+
+locs_all <- cbind(locs_1, locs_2)
+
+locs_lines_geom <- st_sfc(mapply(function(a,b){st_cast(st_union(a,b),"LINESTRING")}, locs_all$geometry, locs_all$geometry.1, SIMPLIFY=FALSE)) 
+
+locs_lines_sf <-
+  st_sf(
+    pops_1 = locs_combos$pops_1,
+    pops_2 = locs_combos$pops_2,
+    geometry = locs_lines_geom,
+    crs = 4326
+  )
+
+
+```
+
+FST matrix to 3 column data frame and adding to `locs_lines_sf`. Modified from:  
+[https://rdrr.io/cran/NST/src/R/dist.3col.r](https://rdrr.io/cran/NST/src/R/dist.3col.r)
+
+```{r}
+dist.3col<-function(dist)
+{
+rowname=rownames(dist)
+colname=colnames(dist)
+rown=row(dist)
+coln=col(dist)
+dist.v=as.vector(stats::as.dist(dist))
+rown.v=as.vector(stats::as.dist(rown))
+coln.v=as.vector(stats::as.dist(coln))
+res=tibble(pops_2=rowname[rown.v],pops_1=colname[coln.v],fst=dist.v)
+res
+}
+
+fst_df <- dist.3col(fst_mat)
+
+locs_lines_fst <- left_join(locs_lines_sf, fst_df, by = c("pops_1", "pops_2"))
+
+```
+
+
+```{r}
+
+pal <- wesanderson::wes_palette("Zissou1", 100, type = "continuous")
+
+states <-
+  rnaturalearth::ne_states(country = "Mexico", returnclass = "sf") 
+
+states_bbox <- st_bbox(states)
+states_bbox["xmax"] <- states_bbox["xmax"] + 100000
+states_bbox["ymax"] <- states_bbox["ymax"] + 100000
+states_bbox["ymin"] <- states_bbox["ymin"] - 100000
+
+states_bbox_sf <- st_as_sfc(states_bbox)
+
+inset_mex <- ggplot() + 
+  geom_sf(data = states_bbox_sf, fill = "white", color = "black") +
+  geom_sf(data = states, fill = "white") + 
+  geom_sf(data = st_as_sfc(st_bbox(locs_lines_fst)), fill = NA, color = "red", size = 1.2) +
+  theme_void()
+
+fst_map<- ggplot() +
+  geom_sf(data = st_geometry(states), fill = "gray") +
+  geom_sf(data = locs_lines_fst, aes(color = fst), size = 2, alpha = 0.7) +
+  geom_label_repel(data = locs_unique, aes(x = longitude, y = latitude, label = locality)) +
+  geom_point(data = locs_unique, aes(x = longitude, y = latitude)) +
+  labs(x = "Longitude", y = "Latitude",  color = expression(paste("Linearized ", F["ST"]))) +
+  coord_sf(xlim = c(st_bbox(locs_lines_fst)[1],
+                    st_bbox(locs_lines_fst)[3]),
+           ylim = c(st_bbox(locs_lines_fst)[2],
+                    st_bbox(locs_lines_fst)[4])) +
+  scale_color_gradientn(colors = pal) +
+  theme_bw()
+
+fst_map_full <- ggdraw() +
+  draw_plot(fst_map) +
+  draw_plot(inset_mex, x = 0.50, y = 0.70, width = 0.3, height = 0.3)
+
+fst_map_full
+
+```
+
+
+```{r, write-fst-map-full, eval=FALSE}
+ggsave(filename = here("output", "figures", "fst_map_figure.pdf"),
+       fst_map_full,
+       dpi = 300,
+       width = 169,
+       height = 120,
+       units = "mm")
+```
+
+
+### pi plot
+
+```{r}
+pops_df <- read_csv(here("data", "pops_file.csv")) %>% 
+  mutate(
+    locality = case_when(
+      near(longitude, -105.0444, tol = 0.0001) ~ "ST",
+      near(longitude, -105.2503, tol = 0.0001) ~ "PC",
+      near(longitude, -105.0980, tol = 0.0001) ~ "LG",
+      near(longitude, -104.8789, tol = 0.0001) ~ "P-35",
+      near(longitude, -104.8027, tol = 0.0001) ~ "PZ",
+      near(longitude, -104.5181, tol = 0.0001) ~ "CH",
+      near(longitude, -104.7663, tol = 0.0001) ~ "PT",
+      near(longitude, -104.9325, tol = 0.0001) ~ "LS",
+      near(longitude, -104.8500, tol = 0.0001) ~ "P-30"
+    ) %>% as.factor()
+  ) 
+
+# locs df with all info
+locs <- pops_df %>% 
+  filter(!duplicated(locality)) %>% 
+  mutate(pops = paste0("pop_", pops))
+
+
+pi_70 <- read_csv(here("output", "pi_70.csv"))
+
+locs_pi <- left_join(locs, pi_70, by = "pops") 
+
+pi_map <- ggplot() +
+  geom_sf(data = st_geometry(states), fill = "gray") +
+  geom_point(data = locs_pi,
+             aes(x = longitude, y = latitude, fill = pi),
+             size = 4,
+             shape = 21) +
+  scale_fill_gradientn(colors = pal) +
+  geom_label_repel(data = locs_unique, aes(x = longitude, y = latitude, label = locality)) +
+  labs(x = "Longitude", y = "Latitude", fill = expression(pi)) +
+  coord_sf(xlim = c(st_bbox(locs_lines_fst)[1],
+                    st_bbox(locs_lines_fst)[3]),
+           ylim = c(st_bbox(locs_lines_fst)[2],
+                    st_bbox(locs_lines_fst)[4])) +
+  theme_bw() +
+  theme(legend.title = element_text(size = 20))
+
+pi_map
+```
+
+```{r, write-pi-map, eval=FALSE}
+ggsave(filename = here("output", "figures", "pi_map_figure.pdf"),
+       pi_map,
+       dpi = 300,
+       width = 169,
+       height = 120,
+       units = "mm")
+```
+

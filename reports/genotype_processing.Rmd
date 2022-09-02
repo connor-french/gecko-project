@@ -1,0 +1,1078 @@
+---
+title: "Genotype processing"
+author: "Connor French"
+date: "12/18/2020"
+output: 
+  html_document:
+    theme: flatly
+    highlight: tango
+    toc: true
+    toc_float: true
+    collapsed: false
+    code_folding: show
+---
+
+
+## Set up environment
+Loading `reticulate` for using python (scikit-allel). To run yourself, you need python v3+ and scikit-allel
+```{r setup}
+library(reticulate)
+library(here)
+library(viridis)
+library(coda)
+library(LEA)
+library(patchwork)
+library(tidyverse)
+
+
+use_condaenv(condaenv = "enyalius")
+
+```
+
+
+Can't find Casey's data set with the outlier individuals removed, so let's do that here.  I'm also filtering for biallelic loci, filtering for missing data (up to 70% and 50%), and filtering for one SNP per locus. For the 70% missing genotype matrix, I'm also including an unthinned matrix since EEMS can handle LD. For the 50% and 70% missing matrices, I'm also outputting vcfs with only individuals that have < 70% missing data based on the `no_outlier_inds` vcf to help with FST estimation.  
+`max-missing 0.3` means that the locus can be missing across 70% of individuals.  
+Run this again with `max-missing 0.5` for the 50% missing matrix and remove the `--thin 2000` argument to retain one SNP per locus.
+
+The `vcftools` version is `0.1.17`.
+Since vcftools won't remove individuals first and then perform the filtering, I need to complete this in two steps- remove the individuals and then perform the filtering.
+```{bash, eval=FALSE}
+vcftools --vcf ../data/subdata.vcf \
+--remove-indv CB0582 \
+--remove-indv CB0594 \
+--remove-indv CB0595 \
+--remove-indv CB0596 \
+--remove-indv CB0599 \
+--recode \
+--recode-INFO-all \
+--out ../data/no_outlier_inds
+
+```
+
+Sample sizes after filtering:  
+
+* 70% missing data- 211,943 SNPs
+* 50% missing data- 62,231 SNPs
+* 70% missing data and 1 SNP per locus- 34,447 SNPs
+* 50% missing data and 1 SNP per locus- 9,967 SNPs
+```{bash, eval = FALSE}
+vcftools --vcf ../data/no_outlier_inds.recode.vcf \
+--min-alleles 2 \
+--max-alleles 2 \
+--max-missing 0.3 \
+--thin 2000 \
+--recode \
+--recode-INFO-all \
+--out ../data/missing_70_thin
+```
+79 individuals kept. 
+
+70% missing data: 48068 SNPs
+50% missing data: 34740 SNPs
+
+```{bash, eval=FALSE}
+vcftools --vcf ../data/no_outlier_inds.recode.vcf \
+--min-alleles 2 \
+--max-alleles 2 \
+--remove-indv CB0422 \
+--remove-indv CB0425 \
+--remove-indv CB0431 \
+--remove-indv CB0433 \
+--remove-indv CB0435 \
+--remove-indv CB0437 \
+--remove-indv CB0445 \
+--remove-indv CB0451 \
+--remove-indv CB0453 \
+--remove-indv CB0454 \
+--remove-indv CB0455 \
+--remove-indv CB0457 \
+--remove-indv CB0461 \
+--remove-indv CB0462 \
+--remove-indv CB0465 \
+--remove-indv CB0466 \
+--remove-indv CB0481 \
+--remove-indv CB0482 \
+--remove-indv CB0483 \
+--remove-indv CB0486 \
+--remove-indv CB0488 \
+--remove-indv CB0490 \
+--remove-indv CB0491 \
+--remove-indv CB0516 \
+--remove-indv CB0517 \
+--remove-indv CB0520 \
+--remove-indv CB0543 \
+--remove-indv CB0544 \
+--remove-indv CB0546 \
+--remove-indv CB0547 \
+--remove-indv CB0552 \
+--remove-indv CB0553 \
+--remove-indv CB0556 \
+--remove-indv CB0577 \
+--remove-indv CB0578 \
+--remove-indv CB0579 \
+--remove-indv CB0584 \
+--remove-indv CB0586 \
+--remove-indv CB0588 \
+--remove-indv CB0590 \
+--remove-indv CB0591 \
+--remove-indv CB0605 \
+--remove-indv CB0607 \
+--remove-indv CB0610 \
+--remove-indv CB0611 \
+--remove-indv CB0613 \
+--remove-indv CB0617 \
+--remove-indv CB0618 \
+--remove-indv CB0620 \
+--remove-indv CB0625 \
+--remove-indv CB0627 \
+--remove-indv CB0633 \
+--remove-indv CB0634 \
+--remove-indv CB0637 \
+--remove-indv CB0640 \
+--remove-indv CB0642 \
+--remove-indv CB0645 \
+--remove-indv CB0646 \
+--remove-indv CB0647 \
+--remove-indv CB0649 \
+--remove-indv CB0650 \
+--remove-indv CB0653 \
+--remove-indv CB0655 \
+--remove-indv CB0656 \
+--remove-indv CB0660 \
+--remove-indv CB0662 \
+--remove-indv CB0668 \
+--remove-indv CB0671 \
+--remove-indv CB0672 \
+--remove-indv CB0673 \
+--remove-indv CB0674 \
+--remove-indv CB0677 \
+--remove-indv CB0679 \
+--remove-indv CB0683 \
+--remove-indv CB0686 \
+--remove-indv CB0687 \
+--remove-indv CB0689 \
+--max-missing 0.5 \
+--thin 2000 \
+--recode \
+--recode-INFO-all \
+--out ../data/missing_50_thin_ind70
+```
+
+Get path for the VCF files and read in population mapping file. I'm mapping the actual population names to the correct localities.  
+The VCF is the output from ipyrad, which has already done filtering for base quality, adapter sequence trimming, and minimum locus retention (minimum 20 individuals per RAD locus, not SNPs). 
+```{r}
+vcf_path_70_thin <- here("data", "missing_70_thin.recode.vcf")
+vcf_path_70 <- here("data", "missing_70.recode.vcf")
+vcf_path_50_thin <- here("data", "missing_50_thin.recode.vcf")
+vcf_path_50_ind70_thin <- here("data", "missing_50_thin_ind70.recode.vcf")
+  
+  
+pops <- read_csv(here("data", "pops_file.csv")) %>% 
+  mutate(
+    site_name = case_when(
+      near(longitude, -105.0444, tol = 0.0001) ~ "ST",
+      # the near() function is more forgiving than == when comparing doubles
+      near(longitude, -105.2503, tol = 0.0001) ~ "PC",
+      near(longitude, -105.0980, tol = 0.0001) ~ "LG",
+      near(longitude, -104.8789, tol = 0.0001) ~ "P-35",
+      near(longitude, -104.8027, tol = 0.0001) ~ "PZ",
+      near(longitude, -104.5181, tol = 0.0001) ~ "CH",
+      near(longitude, -104.7663, tol = 0.0001) ~ "PT",
+      near(longitude, -104.9325, tol = 0.0001) ~ "LS",
+      near(longitude, -104.8500, tol = 0.0001) ~ "P-30"
+    )
+  )
+
+```
+
+Read in the vcfs and take a look at the keys present in one of them to see what we're working with.
+Not going to worry about the unthinned vcf. 
+```{python}
+import allel
+import numpy as np
+import pandas as pd
+
+vcf_70_thin = allel.read_vcf(r.vcf_path_70_thin)
+vcf_50_thin = allel.read_vcf(r.vcf_path_50_thin)
+vcf_50_ind70_thin = allel.read_vcf(r.vcf_path_50_ind70_thin)
+sorted(vcf_70_thin.keys())
+```
+
+## Allele counts and sample size
+
+
+### Process vcf
+Let's take a look at some of the sample names and assign them to a vector for population mapping.
+```{python}
+samples = vcf_70_thin["samples"]
+samples_ind70 = vcf_50_ind70_thin["samples"]
+samples[1:5,]
+```
+
+
+
+I'm checking that the order of individuals in the `pops` files match the order in the vcf. It does! I can safely map the pops to the individuals for allele counting.
+```{r}
+sum(py$samples == pops$individuals)
+
+pops_ind70 <- pops %>% 
+  filter(individuals %in% py$samples_ind70)
+
+sum(py$samples_ind70 == pops_ind70$individuals)
+```
+
+
+Extract the genotype array and take a look at it. 
+```{python}
+gt_70_thin = allel.GenotypeArray(vcf_70_thin['calldata/GT'])
+gt_50_thin = allel.GenotypeArray(vcf_50_thin['calldata/GT'])
+gt_50_ind70_thin = allel.GenotypeArray(vcf_50_ind70_thin['calldata/GT'])
+gt_70_thin.shape
+gt_50_thin.shape
+gt_50_ind70_thin.shape
+```
+
+
+
+Let's look at a PCA of the data to get an idea of population structure.
+```{python}
+# convert to a matrix with the number of alternate alleles
+alt_70 = gt_70_thin.to_n_alt(fill = 9)
+alt_50 = gt_50_thin.to_n_alt(fill = 9)
+alt_50_ind70 = gt_50_ind70_thin.to_n_alt(fill = 9)
+alt_70
+alt_50
+alt_70.shape
+alt_50.shape
+alt_50_ind70.shape
+```
+
+Create a data frame of loci for filtering
+```{r}
+alt_df_70 <- t(py$alt_70) %>% 
+  as_tibble(.name_repair = "unique") %>% 
+  mutate(individual = pops$individuals, 
+         locality = pops$site_name) 
+
+alt_df_50 <- t(py$alt_50) %>% 
+  as_tibble(.name_repair = "unique") %>% 
+  mutate(individual = pops$individuals, 
+         locality = pops$site_name) 
+
+alt_df_50_ind70 <- t(py$alt_50_ind70) %>% 
+  as_tibble(.name_repair = "unique") %>% 
+  mutate(individual = pops_ind70$individuals, 
+         locality = pops_ind70$site_name) 
+
+
+alt_df_70
+alt_df_50
+alt_df_50_ind70
+```
+
+Check out sample sizes per locality as a sanity check
+```{r}
+alt_df_70 %>% 
+  count(locality)
+
+alt_df_50 %>% 
+  count(locality)
+
+alt_df_50_ind70 %>% 
+  count(locality)
+```
+
+
+
+Replace 9s with NAs for performing a PCA on the data in R
+```{r}
+alt_na_70 <- na_if(alt_df_70, 9)
+alt_na_50 <- na_if(alt_df_50, 9)
+alt_na_50_ind70 <- na_if(alt_df_50_ind70, 9)
+```
+
+
+Write to file for easy processing later  
+
+```{r}
+write_csv(alt_na_70, here("output", "genotype_matrices", "genotypes_na_70.csv"))
+write_csv(alt_na_50, here("output", "genotype_matrices", "genotypes_na_50.csv"))
+write_csv(alt_na_50_ind70, here("output", "genotype_matrices", "genotypes_na_50_ind70.csv"))
+```
+
+
+Get the names of all loci where a locality does not have an allele (i.e. all data is missing for the locus at that locality). We only want loci that are present in all populations
+```{r}
+perc_na_pca <- function(x){
+  y <- na.omit(x)
+  return(1 - length(y) / length(x))
+}
+
+alt_zero_70 <- alt_na_70 %>% 
+  group_by(locality) %>% 
+  summarize_if(is.numeric, perc_na_pca)
+
+alt_zero_50 <- alt_na_50 %>% 
+  group_by(locality) %>% 
+  summarize_if(is.numeric, perc_na_pca)
+
+
+# transpose the tibble and extract the locus indices
+loci_no_pop_70 <- alt_zero_70 %>% 
+  pivot_longer(cols = contains("..."), names_to = "locus", values_to = "perc_na") %>% 
+  pivot_wider(id_cols = locus, names_from = locality, values_from = perc_na) %>% 
+  filter_if(is.numeric, any_vars(. >= 1.0)) %>% 
+  pull(locus) 
+
+loci_no_pop_50 <- alt_zero_50 %>% 
+  pivot_longer(cols = contains("..."), names_to = "locus", values_to = "perc_na") %>% 
+  pivot_wider(id_cols = locus, names_from = locality, values_from = perc_na) %>% 
+  filter_if(is.numeric, any_vars(. >= 1.0)) %>% 
+  pull(locus) 
+
+```
+
+
+Filter the genotype table for these loci
+```{r}
+alt_filt_70 <- alt_df_70 %>% 
+  dplyr::select(-any_of(loci_no_pop_70))
+
+alt_filt_50 <- alt_df_50 %>% 
+  dplyr::select(-any_of(loci_no_pop_50))
+
+
+alt_filt_70
+alt_filt_50
+```
+
+### Imputed PCA
+
+Impute the missing data for each locus, stratified by locality. For each locus, I'm grouping by locality, then randomly sampling with replacement from the pool of genotypes for the locality and replacing the missing data.
+```{r}
+impute_missing <- function(x){
+  na_col <- na_if(x, 9)
+  na_ind <- which(x == 9)
+  sample_vals <- na.omit(na_col)
+  new_alleles <- sample(sample_vals, 
+                        size = length(na_ind),
+                        replace = TRUE)
+  
+  x[na_ind] <- new_alleles
+  
+  return(x)
+}
+
+alt_impute_70 <- alt_filt_70 %>% 
+  group_by(locality) %>% 
+  mutate_at(vars(starts_with("...")), impute_missing) %>% 
+  ungroup()
+
+alt_impute_50 <- alt_filt_50 %>% 
+  group_by(locality) %>% 
+  mutate_at(vars(starts_with("...")), impute_missing) %>% 
+  ungroup()
+
+
+alt_impute_70
+alt_impute_50
+```
+
+Remove constant loci. After imputing, some loci become constant and no longer add information, thus they can be removed.
+```{r}
+len_unique <- function(x){
+  y <- unique(x)
+  z <- length(y)
+  return(z)
+}
+
+alt_constant_70 <- alt_impute_70 %>% 
+  summarize_all(len_unique) %>% 
+  pivot_longer(cols = everything(), names_to = "locus", values_to = "n_unique") %>% 
+  filter(n_unique > 1) %>% 
+  pull(locus)
+
+alt_constant_50 <- alt_impute_50 %>% 
+  summarize_all(len_unique) %>% 
+  pivot_longer(cols = everything(), names_to = "locus", values_to = "n_unique") %>% 
+  filter(n_unique > 1) %>% 
+  pull(locus)
+  
+
+alt_impute_noconst_70 <- alt_impute_70 %>% 
+  dplyr::select(all_of(alt_constant_70))
+
+alt_impute_noconst_50 <- alt_impute_50 %>% 
+  dplyr::select(all_of(alt_constant_50))
+
+```
+
+
+Perform a PCA on the imputed data
+```{r}
+alt_mat_70 <- alt_impute_noconst_70 %>% 
+  dplyr::select(-individual, -locality) %>% 
+  as.matrix()
+
+alt_mat_50 <- alt_impute_noconst_50 %>% 
+  dplyr::select(-individual, -locality) %>% 
+  as.matrix()
+
+alt_pca_70 <- prcomp(alt_mat_70, 
+                  center = TRUE, 
+                  scale. = TRUE)
+
+alt_pca_50 <- prcomp(alt_mat_50, 
+                  center = TRUE, 
+                  scale. = TRUE)
+```
+
+
+Plot the first 5 pc axes for the 70% missing data matrix. The localities don't seem to be too over-clustered. 
+```{r}
+alt_x_70 <- alt_pca_70$x %>% 
+  as_tibble() %>% 
+  mutate(individual = alt_impute_noconst_70$individual,
+         locality = alt_impute_noconst_70$locality)
+
+pc_12_70 <- ggplot(data = alt_x_70) +
+  geom_point(aes(x = PC1, y = PC2, color = locality), alpha = 0.7) +
+  scale_color_viridis_d() +
+  labs(x = paste0("PC1 (", round(s_70$importance[2,1]*100, 1), "% variance explained)"),
+       y = paste0("PC2 (", round(s_70$importance[2,2]*100, 1), "% variance explained)"))
+
+pc_23_70 <- ggplot(data = alt_x_70) +
+  geom_point(aes(x = PC2, y = PC3, color = locality), alpha = 0.7) +
+  scale_color_viridis_d() +
+  labs(x = paste0("PC2 (", round(s_70$importance[2,2]*100, 1), "% variance explained)"),
+       y = paste0("PC3 (", round(s_70$importance[2,3]*100, 1), "% variance explained)"))
+
+pc_34_70 <- ggplot(data = alt_x_70) +
+  geom_point(aes(x = PC3, y = PC4, color = locality), alpha = 0.7) +
+  scale_color_viridis_d() +
+  labs(x = paste0("PC3 (", round(s_70$importance[2,3]*100, 1), "% variance explained)"),
+       y = paste0("PC4 (", round(s_70$importance[2,4]*100, 1), "% variance explained)"))
+
+pc_45_70 <- ggplot(data = alt_x_70) +
+  geom_point(aes(x = PC4, y = PC5, color = locality), alpha = 0.7) +
+  scale_color_viridis_d() +
+  labs(x = paste0("PC4 (", round(s_70$importance[2,4]*100, 1), "% variance explained)"),
+       y = paste0("PC5 (", round(s_70$importance[2,5]*100, 1), "% variance explained)"))
+
+pc_12_70 + pc_23_70 + pc_34_70 + pc_45_70
+```
+
+
+Write to file  
+
+```{r, eval=FALSE}
+# write to a csv for publication figure
+write_csv(alt_x_70, here("output", "spreadsheets", "pca_fig_alt_x_70.csv"))
+
+s_70 <- summary(alt_pca_70)
+
+# write to an rds file for publication figure
+write_rds(s_70, here("output", "rds_objects", "pca_fig_s_70.rds"))
+```
+
+
+Do the same thing with the 50% complete matrix. The two matrices are broadly similar. There aren't any differences to note.
+```{r}
+alt_x_50 <- alt_pca_50$x %>% 
+  as_tibble() %>% 
+  mutate(individual = alt_impute_noconst_50$individual,
+         locality = alt_impute_noconst_50$locality)
+
+s_50 <- summary(alt_pca_50)
+
+pc_12_50 <- ggplot(data = alt_x_50) +
+  geom_point(aes(x = PC1, y = PC2, color = locality), alpha = 0.7) +
+  scale_color_viridis_d() +
+  labs(x = paste0("PC1 (", round(s_50$importance[2,1]*100, 1), "% variance explained)"),
+       y = paste0("PC2 (", round(s_50$importance[2,2]*100, 1), "% variance explained)"))
+
+pc_23_50 <- ggplot(data = alt_x_50) +
+  geom_point(aes(x = PC2, y = PC3, color = locality), alpha = 0.7) +
+  scale_color_viridis_d() +
+  labs(x = paste0("PC2 (", round(s_50$importance[2,2]*100, 1), "% variance explained)"),
+       y = paste0("PC3 (", round(s_50$importance[2,3]*100, 1), "% variance explained)"))
+
+pc_34_50 <- ggplot(data = alt_x_50) +
+  geom_point(aes(x = PC3, y = PC4, color = locality), alpha = 0.7) +
+  scale_color_viridis_d() +
+  labs(x = paste0("PC3 (", round(s_50$importance[2,3]*100, 1), "% variance explained)"),
+       y = paste0("PC4 (", round(s_50$importance[2,4]*100, 1), "% variance explained)"))
+
+pc_45_50 <- ggplot(data = alt_x_50) +
+  geom_point(aes(x = PC4, y = PC5, color = locality), alpha = 0.7) +
+  scale_color_viridis_d() +
+  labs(x = paste0("PC4 (", round(s_50$importance[2,4]*100, 1), "% variance explained)"),
+       y = paste0("PC5 (", round(s_50$importance[2,5]*100, 1), "% variance explained)"))
+
+pc_12_50 + pc_23_50 + pc_34_50 + pc_45_50
+```
+
+
+Write to file  
+
+```{r, eval=FALSE}
+# write to a csv for publication figure
+write_csv(alt_x_50, here("output", "spreadsheets", "pca_fig_alt_x_50.csv"))
+
+s_50 <- summary(alt_pca_50)
+
+# write to an rds file for publication figure
+write_rds(s_50, here("output", "rds_objects", "pca_fig_s_50.rds"))
+```
+
+
+
+
+Do the same thing with the 50% complete matrix and only individuals with less than 70% missing data are kept. This matrix with fewer individuals
+```{r}
+alt_x_50_ind70 <- alt_pca_50_ind70$x %>% 
+  as_tibble() %>% 
+  mutate(individual = alt_impute_noconst_50_ind70$individual,
+         locality = alt_impute_noconst_50_ind70$locality)
+
+s_50_ind70 <- summary(alt_pca_50_ind70)
+
+pc_12_50_ind70 <- ggplot(data = alt_x_50_ind70) +
+  geom_point(aes(x = PC1, y = PC2, color = locality), alpha = 0.7) +
+  scale_color_viridis_d() +
+  labs(x = paste0("PC1 (", round(s_50_ind70$importance[2,1]*100, 1), "% variance explained)"),
+       y = paste0("PC2 (", round(s_50_ind70$importance[2,2]*100, 1), "% variance explained)"))
+
+pc_23_50_ind70 <- ggplot(data = alt_x_50_ind70) +
+  geom_point(aes(x = PC2, y = PC3, color = locality), alpha = 0.7) +
+  scale_color_viridis_d() +
+  labs(x = paste0("PC2 (", round(s_50_ind70$importance[2,2]*100, 1), "% variance explained)"),
+       y = paste0("PC3 (", round(s_50_ind70$importance[2,3]*100, 1), "% variance explained)"))
+
+pc_34_50_ind70 <- ggplot(data = alt_x_50_ind70) +
+  geom_point(aes(x = PC3, y = PC4, color = locality), alpha = 0.7) +
+  scale_color_viridis_d() +
+  labs(x = paste0("PC3 (", round(s_50_ind70$importance[2,3]*100, 1), "% variance explained)"),
+       y = paste0("PC4 (", round(s_50_ind70$importance[2,4]*100, 1), "% variance explained)"))
+
+pc_45_50_ind70 <- ggplot(data = alt_x_50_ind70) +
+  geom_point(aes(x = PC4, y = PC5, color = locality), alpha = 0.7) +
+  scale_color_viridis_d() +
+  labs(x = paste0("PC4 (", round(s_50_ind70$importance[2,4]*100, 1), "% variance explained)"),
+       y = paste0("PC5 (", round(s_50_ind70$importance[2,5]*100, 1), "% variance explained)"))
+
+pc_12_50_ind70 + pc_23_50_ind70 + pc_34_50_ind70 + pc_45_50_ind70
+```
+
+
+
+
+### Reference PCA
+
+The "traditional" way to do it. Definitely biases results, but by how much?
+
+Compare with a PCA on genotypes where NA is replaced with the reference (0).
+```{r}
+replace_9 <- function(x) {
+  x[x == 9] <- 0
+  
+  return(x)
+}
+
+alt_0_70 <- alt_filt_70 %>% 
+  mutate_if(is.numeric, replace_9)
+
+alt_0_50 <- alt_filt_50 %>% 
+  mutate_if(is.numeric, replace_9)
+  
+
+alt_0_const_70 <- alt_0_70 %>% 
+  summarize_all(len_unique) %>% 
+  pivot_longer(cols = everything(), names_to = "locus", values_to = "n_unique") %>% 
+  filter(n_unique > 1) %>% 
+  pull(locus)
+
+alt_0_const_50 <- alt_0_50 %>% 
+  summarize_all(len_unique) %>% 
+  pivot_longer(cols = everything(), names_to = "locus", values_to = "n_unique") %>% 
+  filter(n_unique > 1) %>% 
+  pull(locus)
+
+alt_0_noconst_70 <- alt_0_70 %>% 
+  select(all_of(alt_0_const_70))
+
+alt_0_noconst_50 <- alt_0_50 %>% 
+  select(all_of(alt_0_const_50))
+
+```
+
+
+```{r}
+alt_0_mat_70 <- alt_0_noconst_70 %>% 
+  select(-individual, -locality) %>% 
+  as.matrix()
+
+alt_0_mat_50 <- alt_0_noconst_50 %>% 
+  select(-individual, -locality) %>% 
+  as.matrix()
+
+alt_0_pca_70 <- prcomp(alt_0_mat_70, 
+                  center = TRUE, 
+                  scale. = TRUE)
+
+alt_0_pca_50 <- prcomp(alt_0_mat_50, 
+                  center = TRUE, 
+                  scale. = TRUE)
+```
+
+Plot the first 5 pc axes for the 70% missing data matrix. Replacing the missing data with the alternative allele creates a spectrum towards the 0 planes. This is probably from the artificially created uniform ancestral diversity. The groups fall out similar to the imputed data, but noisier. I think imputation, while overclustering a bit, better represents the population genetic patterns.
+```{r}
+alt_0_x_70 <- alt_0_pca_70$x %>% 
+  as_tibble() %>% 
+  mutate(individual = alt_filt_70$individual,
+         locality = alt_filt_70$locality)
+
+pc_0_12_70 <- ggplot(data = alt_0_x_70) +
+  geom_point(aes(x = PC1, y = PC2, color = locality)) +
+  scale_color_viridis_d() +
+  labs(x = paste0("PC1 (", round(s_0_70$importance[2,1]*100, 1), "% variance explained)"),
+       y = paste0("PC2 (", round(s_0_70$importance[2,2]*100, 1), "% variance explained)"))
+
+pc_0_23_70 <- ggplot(data = alt_0_x_70) +
+  geom_point(aes(x = PC2, y = PC3, color = locality)) +
+  scale_color_viridis_d() +
+  labs(x = paste0("PC2 (", round(s_0_70$importance[2,2]*100, 1), "% variance explained)"),
+       y = paste0("PC3 (", round(s_0_70$importance[2,3]*100, 1), "% variance explained)"))
+
+pc_0_34_70 <- ggplot(data = alt_0_x_70) +
+  geom_point(aes(x = PC3, y = PC4, color = locality)) +
+  scale_color_viridis_d() +
+  labs(x = paste0("PC3 (", round(s_0_70$importance[2,3]*100, 1), "% variance explained)"),
+       y = paste0("PC4 (", round(s_0_70$importance[2,4]*100, 1), "% variance explained)"))
+
+pc_0_45_70 <- ggplot(data = alt_0_x_70) +
+  geom_point(aes(x = PC4, y = PC5, color = locality)) +
+  scale_color_viridis_d() +
+  labs(x = paste0("PC4 (", round(s_0_70$importance[2,4]*100, 1), "% variance explained)"),
+       y = paste0("PC5 (", round(s_0_70$importance[2,5]*100, 1), "% variance explained)"))
+
+pc_0_12_70 + pc_0_23_70 + pc_0_34_70 + pc_0_45_70 + plot_layout(guides = "collect")
+
+```
+
+```{r, eval=FALSE}
+# write to a file for publication figure
+write_csv(alt_0_x_70, here("output", "spreadsheets", "pca_fig_alt_0_x_70.csv"))
+
+s_0_70 <- summary(alt_0_pca_70)
+
+# write to a file for publication figure
+write_rds(s_0_70, here("output", "rds_objects", "pca_fig_s_0_70.rds"))
+```
+
+The 50% missing data matrix is effectively the same as the 70% missing data matrix, except some axes are flipped. I'm going to use the 70% missing data matrix going forward, since they're both similar enough.
+```{r}
+alt_0_x_50 <- alt_0_pca_50$x %>% 
+  as_tibble() %>% 
+  mutate(individual = alt_filt_50$individual,
+         locality = alt_filt_50$locality)
+
+s_0_50 <- summary(alt_0_pca_50)
+
+pc_0_12_50 <- ggplot(data = alt_0_x_50) +
+  geom_point(aes(x = PC1, y = PC2, color = locality)) +
+  scale_color_viridis_d() +
+  labs(x = paste0("PC1 (", round(s_0_50$importance[2,1]*100, 1), "% variance explained)"),
+       y = paste0("PC2 (", round(s_0_50$importance[2,2]*100, 1), "% variance explained)"))
+
+pc_0_23_50 <- ggplot(data = alt_0_x_50) +
+  geom_point(aes(x = PC2, y = PC3, color = locality)) +
+  scale_color_viridis_d() +
+  labs(x = paste0("PC2 (", round(s_0_50$importance[2,2]*100, 1), "% variance explained)"),
+       y = paste0("PC3 (", round(s_0_50$importance[2,3]*100, 1), "% variance explained)"))
+
+pc_0_34_50 <- ggplot(data = alt_0_x_50) +
+  geom_point(aes(x = PC3, y = PC4, color = locality)) +
+  scale_color_viridis_d() +
+  labs(x = paste0("PC3 (", round(s_0_50$importance[2,3]*100, 1), "% variance explained)"),
+       y = paste0("PC4 (", round(s_0_50$importance[2,4]*100, 1), "% variance explained)"))
+
+pc_0_45_50 <- ggplot(data = alt_0_x_50) +
+  geom_point(aes(x = PC4, y = PC5, color = locality)) +
+  scale_color_viridis_d() +
+  labs(x = paste0("PC4 (", round(s_0_50$importance[2,4]*100, 1), "% variance explained)"),
+       y = paste0("PC5 (", round(s_0_50$importance[2,5]*100, 1), "% variance explained)"))
+
+pc_0_12_50 + pc_0_23_50 + pc_0_34_50 + pc_0_45_50 + plot_layout(guides = "collect")
+
+```
+```{r}
+# write to a file for publication figure
+write_csv(alt_0_x_50, here("output", "spreadsheets", "pca_fig_alt_0_x_50.csv"))
+
+s_0_50 <- summary(alt_0_pca_50)
+
+# write to a file for publication figure
+write_rds(s_0_50, here("output", "rds_objects", "pca_fig_s_0_50.rds"))
+```
+
+
+Writing the matrices out to `.csv` and `.geno` files for sNMF analyses and to make viewing them again easier.
+```{r, eval=FALSE}
+# unprocessed matrices, 9 represents missing data
+write_csv(alt_filt_70, here("output", "genotype_matrices", "genotypes_9_70.csv"))
+write_csv(alt_filt_50, here("output", "genotype_matrices", "genotypes_9_50.csv"))
+
+alt_filt_70_geno <- alt_filt_70 %>% 
+  select(-individual, -locality) %>% 
+  as.matrix() 
+
+
+alt_filt_50_geno <- alt_filt_50 %>% 
+  select(-individual, -locality) %>% 
+  as.matrix() 
+  
+  
+write.geno(alt_filt_70_geno, output.file = here("output", "genotype_matrices", "genotypes_9_70.geno"))
+            
+
+write.geno(alt_filt_50_geno,
+            output.file = here("output", "genotype_matrices", "genotypes_9_50.geno"))
+
+# imputed matrices with constant alleles removed.
+write_csv(alt_impute_noconst_70, here("output", "genotype_matrices", "genotypes_imputed_70.csv"))
+write_csv(alt_impute_noconst_50, here("output", "genotype_matrices", "genotypes_imputed_50.csv"))
+
+write.geno(alt_mat_70,
+            output.file = here("output", "genotype_matrices", "genotypes_imputed_70.geno"))
+
+write.geno(alt_mat_50,
+            output.file = here("output", "genotype_matrices", "genotypes_imputed_50.geno"))
+
+
+# replacing NA with the ancestral allele
+write_csv(alt_0_noconst_70, here("output", "genotype_matrices", "genotypes_ancestral_70.csv"))
+write_csv(alt_0_noconst_50, here("output", "genotype_matrices", "genotypes_ancestral_50.csv"))
+
+write.geno(alt_0_mat_70,
+            output.file = here("output", "genotype_matrices", "genotypes_ancestral_70.geno"))
+
+write.geno(alt_0_mat_50,
+            output.file = here("output", "genotype_matrices", "genotypes_ancestral_50.geno"))
+
+
+```
+
+
+
+## Fst and pi
+
+Calculate a pairwise Dxy matrix for our genetic distance matrix. 
+
+```{r eval=FALSE}
+pops <- read_csv(here("data", "pops_file.csv")) %>% 
+  mutate(
+    locality = case_when(
+      near(longitude, -105.0444, tol = 0.0001) ~ "ST",
+      near(longitude, -105.2503, tol = 0.0001) ~ "PC",
+      near(longitude, -105.0980, tol = 0.0001) ~ "LG",
+      near(longitude, -104.8789, tol = 0.0001) ~ "P-35",
+      near(longitude, -104.8027, tol = 0.0001) ~ "PZ",
+      near(longitude, -104.5181, tol = 0.0001) ~ "CH",
+      near(longitude, -104.7663, tol = 0.0001) ~ "PT",
+      near(longitude, -104.9325, tol = 0.0001) ~ "LS",
+      near(longitude, -104.8500, tol = 0.0001) ~ "P-30"
+    ) %>% as.factor()
+  )
+
+pops_list <- pops %>% 
+  dplyr::select(locality, individuals) %>% 
+  group_split(locality) %>% 
+  purrr::map(pull, individuals)
+
+names(pops_list) <- levels(pops$locality)
+
+# samples remaining after filtering for at least 30% completeness
+samples_ind70 <- c("CB0421", "CB0430", "CB0432", "CB0434", "CB0436", "CB0438", "CB0439", "CB0442", "CB0444", "CB0446", "CB0447", "CB0449", "CB0450", "CB0452", "CB0456", "CB0458", "CB0459", "CB0460", "CB0463", "CB0464", "CB0468", "CB0485", "CB0487", "CB0489", "CB0492", "CB0518", "CB0519", "CB0545", "CB0548", "CB0549", "CB0550", "CB0551", "CB0554", "CB0555", "CB0557", "CB0559", "CB0561", "CB0573", "CB0574", "CB0576", "CB0589", "CB0593", "CB0598", "CB0603", "CB0608", "CB0612", "CB0614", "CB0615", "CB0616", "CB0621", "CB0622", "CB0623", "CB0626", "CB0635", "CB0636", "CB0638", "CB0639", "CB0641", "CB0643", "CB0644", "CB0648", "CB0651", "CB0652", "CB0654", "CB0659", "CB0663", "CB0664", "CB0665", "CB0667", "CB0670", "CB0676", "CB0678", "CB0680", "CB0681", "CB0682", "CB0684", "CB0685", "CB0688", "CB0690")
+
+pops_ind70 <- pops %>% 
+  filter(individuals %in% samples_ind70)
+
+pops_list_ind70 <- pops_ind70 %>% 
+  dplyr::select(locality, individuals) %>% 
+  group_split(locality) %>% 
+  purrr::map(pull, individuals)
+
+names(pops_list_ind70) <- levels(pops_ind70$locality)
+
+
+gen_70 <- PopGenome::readData(here("data", "popgenome_70"),
+                                populations = pops_list,
+                                format = "VCF",
+                                include.unknown = TRUE)
+
+gen_50 <- PopGenome::readData(here("data", "popgenome_50"),
+                                populations = pops_list,
+                                format = "VCF",
+                                include.unknown = TRUE)
+
+gen_50_ind70 <- PopGenome::readData(here("data", "popgenome_50_ind70"),
+                                populations = pops_list_ind70,
+                                format = "VCF",
+                                include.unknown = TRUE)
+
+
+# calc pairwise nucleotide divergence
+# 50% missing
+gen_50 <- PopGenome::diversity.stats.between(object = gen_50, nucleotide.mode = TRUE)
+gen_50 <- PopGenome::F_ST.stats(object = gen_50)
+
+fst_vec_50 <- gen_50@nuc.F_ST.pairwise[,1]
+fst_vec_50 <- fst_vec_50/(1 - fst_vec_50)
+
+fst_mat_50 <- matrix(nrow = 9, ncol = 9)
+
+fst_mat_50[upper.tri(fst_mat_50)] <- fst_vec_50
+fst_mat_50[lower.tri(fst_mat_50)] <- fst_vec_50
+
+# 50% missing with 70% per-individual missingness
+gen_50_ind70 <- PopGenome::diversity.stats.between(object = gen_50_ind70, nucleotide.mode = TRUE)
+gen_50_ind70 <- PopGenome::F_ST.stats(object = gen_50_ind70)
+
+fst_vec_50_ind70 <- gen_50_ind70@nuc.F_ST.pairwise[,1]
+fst_vec_50_ind70 <- fst_vec_50_ind70/(1 - fst_vec_50_ind70)
+
+fst_mat_50_ind70 <- matrix(nrow = 9, ncol = 9)
+
+fst_mat_50_ind70[upper.tri(fst_mat_50_ind70)] <- fst_vec_50_ind70
+fst_mat_50_ind70[lower.tri(fst_mat_50_ind70)] <- fst_vec_50_ind70
+
+# 70% missing
+gen_70 <- PopGenome::diversity.stats.between(object = gen_70,
+                                              nucleotide.mode = TRUE)
+gen_70 <- PopGenome::F_ST.stats(object = gen_70)
+
+fst_vec_70 <- gen_70@nuc.F_ST.pairwise[,1]
+fst_vec_70 <- fst_vec_70/(1 - fst_vec_70)
+
+fst_mat_70 <- matrix(nrow = 9, ncol = 9)
+
+fst_mat_70[upper.tri(fst_mat_70)] <- fst_vec_70
+fst_mat_70[lower.tri(fst_mat_70)] <- fst_vec_70
+
+fst_vec_names <- names(fst_vec_50)
+pop_names <- names(pops_list)
+
+pi_70 <- PopGenome::diversity.stats(object = gen_70)
+
+pi_70_vec <- pi_70@nuc.diversity.within / pi_70@n.biallelic.sites
+
+str_replace(fst_vec_names, "pop1", "CH")
+
+# # write to file
+# #write.table(dxy_mat,
+# #            file = here("output", "spreadsheets", "dxy_matrix.txt"))
+```
+
+
+```{r}
+fst_mat_50
+```
+
+
+```{r}
+bvector <- c(0,1,NaN,0)
+# To calculate the average nucleotide diversity PopGenome will do the following:
+ones <- sum(bvector==1, na.rm=TRUE)
+zeros <- sum(bvector==0, na.rm=TRUE)
+sample.size <- ones + zeros
+n.comparisons <- (sample.size*(sample.size-1))/2
+nuc.diversity <- (ones * zeros)/n.comparisons
+```
+
+Write pi to file
+```{r, eval=FALSE}
+pi_70_df <- pi_70_vec[1,] %>% 
+  enframe(name = "pops", value = "pi") %>% 
+  mutate(pops = str_replace(pops, " ", "_"))
+
+write_csv(pi_70_df, here("output", "pi_70.csv"))
+```
+
+
+### Missing data exploration
+
+I did some exploration of an earlier unfiltered data set that I may pull scripts from to work with later.
+
+Quality filtering and missing data removal has already been performed. Now, I'm just interested in filtering for biallelic loci, singletons and missing data.  
+Filter genotype array for biallelic loci.
+```{python}
+ac = gt.count_alleles()
+ac_bi = ac.is_biallelic_01()
+
+ac_singleton = np.logical_not(ac.is_singleton(allele = 0) | ac.is_singleton(allele = 1))
+
+ac_filt = np.logical_and(ac_bi, ac_singleton)
+
+gt_filt = gt.compress(ac_filt, axis=0)
+gt_filt.shape
+```
+
+Filter missing data per individual. There's lots of missing data for some sites!
+```{python}
+count_MD = gt_filt.count_missing(axis=1)
+```
+
+```{r}
+miss_ind <- unlist(py$count_MD)
+hist(miss_ind / 156)
+```
+
+Filter for sites that are present in at least 30% of individuals. 
+```{python}
+pass_MD = count_MD < 0.7*156
+
+gt_filt_miss = gt_filt.compress(pass_MD, axis=0)
+
+np.unique(pass_MD, return_counts=True)
+```
+
+
+Let's look at individuals with missing data across sites. This is the number of loci missing per individual. So, an individual with 90% missingness only has 10% of loci shared across individuals.  
+
+Some individuals have lots of missing data!  
+Note- this estimate is biased because it's an estimate of per-individual missingness after filtering for per-locus missingness, but I think it's still a relatively accurate picture of how much data each individual contains.  
+```{python}
+count_MD_ind = gt_filt_miss.count_missing(axis=0)
+
+perc_MD_ind = {}
+
+for site in range(len(count_MD_ind)):
+   perc_MD_ind[site] = count_MD_ind[site] / gt_filt_miss.shape[0]
+
+```
+
+
+
+```{r}
+perc_miss <- unlist(py$perc_MD_ind)
+
+hist(perc_miss)
+```
+
+
+```{r}
+miss_df <- tibble(perc_miss = perc_miss,
+                  ind = pops$individuals,
+                  pop = pops$pops,
+                  site = pops$site_name)
+miss_df
+```
+
+Missingness seems to be spread across localities.  
+```{r}
+ggplot(miss_df) +
+  geom_col(aes(x = ind, y = perc_miss, fill = site))
+```
+
+
+
+Same pattern holds true when separating localities into their own facets. The red line indicates 50% missingness (a typical threshold).
+```{r}
+miss_df %>% 
+  ggplot(aes(x = perc_miss)) +
+  geom_histogram() +
+  geom_vline(xintercept = 0.5, color = "red") +
+  facet_wrap(~site)
+
+miss_df %>% count(site)
+```
+
+What do the population numbers look like when filtering individuals for missing data? Filter for individuals with <= 50% missing data. That creates a large imbalance in sample size per locality.
+```{r}
+miss_df %>% 
+  filter(perc_miss <= 0.5) %>% 
+  count(site) %>% 
+  ggplot() + 
+  geom_col(aes(x = site, y = n))
+```
+
+
+
+
+
+Let's keep only individuals with <=50% missing data.
+```{r}
+length_no_na <- function(x){
+  y <- na.omit(x)
+  return(length(y))
+}
+
+perc_na <- function(x) {
+  y <- 1 - length_no_na(x) / nrow(alt_geno_df)
+  return(y)
+}
+
+alt_geno_70 <- as.matrix(py$alt_70)
+alt_geno_50 <- as.matrix(py$alt_50)
+colnames(alt_geno_70) <- pops$individuals
+colnames(alt_geno_50) <- pops$individuals
+
+alt_geno_df <- alt_geno %>% 
+  as_tibble() %>% 
+  na_if(9)
+
+alt_geno_missing <- alt_geno_df %>% 
+  summarize_all(perc_na) 
+
+alt_geno_missing
+```
+
+
+```{r}
+alt_geno_missing %>% 
+  pivot_longer(cols = everything(), names_to = "individual", values_to = "perc_miss") %>% 
+  ggplot() +
+  geom_col(aes(x = individual, y = perc_miss))
+```
+
+
+```{r}
+keep_inds_geno <- alt_geno_missing %>% 
+  pivot_longer(cols = everything(), names_to = "individual", values_to = "perc_miss") %>% 
+  filter(perc_miss <= .5) %>% 
+  pull(individual)
+```
+
+See what filtering for missing data looks like now
+```{r}
+perc_miss_9 <- function(x){
+  y <- sum(x == 9)
+  z <- y / length(x)
+}
+alt_df_70_percmiss <- alt_df_70 %>% 
+  summarize_if(is.numeric, perc_miss_9) %>% 
+  pivot_longer(cols = contains("..."), names_to = "locus", values_to = "perc_miss") 
+
+```
+
+```{r}
+alt_df_percmiss %>% 
+  filter(perc_miss <= 0.5) %>% 
+  nrow()
+```
+
+Since I didn't initially select SNP per locus, I'm selecting every tenth SNP. This should have the same effect, since the SNPs are arranged by locus and there are only a few SNPs per locus anyways.
+
+```{r}
+# have to extent the number of digits r reads out to successfully select from the SNP sample
+options( scipen = 20 )
+
+snp_sample <- paste0("...", seq(from = 10, to = ncol(alt_df_filt), by = 10))
+
+alt_df_one <- alt_df_filt %>% 
+  select(all_of(snp_sample), locality, individual)
+
+alt_df_one
+```
+

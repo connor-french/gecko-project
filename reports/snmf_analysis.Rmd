@@ -1,0 +1,56 @@
+---
+title: "sNMF Analysis"
+author: "Connor French"
+date: "12/22/2020"
+output: 
+  html_document:
+    theme: flatly
+    highlight: tango
+    toc: true
+    toc_float: true
+    collapsed: false
+    code_folding: show
+---
+
+```{r setup}
+library(here)
+library(LEA)
+```
+
+Read in the `.geno` file.
+```{r}
+geno_file <- read.geno(here("output", "genotype_matrices", "genotypes_9_70.geno"))
+```
+
+Make sure to create a subfolder of the output folder with space for the different sNMF alpha values. They need a unique folder for each sNMF project.
+```{r}
+geno_10 <- write.geno(geno_file, here("output", "snmf_a10", "genotypes_9_70.geno"))
+geno_100 <- write.geno(geno_file, here("output", "snmf_a100", "genotypes_9_70.geno"))
+```
+
+
+Run the sNMF algorithm
+```{r message=FALSE, warning=FALSE}
+snmf_obj_a10 <- snmf(geno_10, K = 1:9, project = "new", alpha = 10, entropy = TRUE, repetitions = 20, ploidy = 2)
+
+snmf_obj_a100 <- snmf(geno_100, K = 1:5, project = "new", alpha = 100, entropy = TRUE, repetitions = 20, ploidy = 2)
+```
+
+
+
+
+
+
+
+
+```{r}
+# plot cross-entropy criterion of all runs of the project
+par(mfrow= c(2,1), mar = rep(2, 4))
+plot(snmf_obj_a10, cex = 1.2, col = "lightblue", pch = 19, main = "a10")
+plot(snmf_obj_a100, cex = 1.2, col = "lightblue", pch = 19, main = "a100")
+```
+
+
+
+
+

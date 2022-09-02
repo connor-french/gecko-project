@@ -1,0 +1,496 @@
+---
+title: "Species distribution modeling and landscape genetics of P. benedetti"
+author: Connor French
+output: 
+  html_document:
+    theme: flatly
+    highlight: tango
+    toc: true
+    toc_float: true
+    collapsed: false
+    code_folding: show
+---
+
+## Intro
+
+This is a report containing all analyses for the species distribution modeling and landscape genetics portions of Sniffin et al. The first portion contains modified output from [Wallace](https://wallaceecomod.github.io/), a platform for species distribution modeling. Followed are analyses and figures for landscape genetics. Wallace automatically outputs a `.Rmd` file, which I've modified to include the rest of the analyses. If coding and commenting conventions seem to jump around, this is why.  
+
+I'm using the `here()` package and R Projects for managing the workspace, so everything should run right out of the box, assuming package versioning is the same. I've included a printout of my environment, including my OS, package versions, etc. at the end of the document that you can refer to if anything breaks. Don't move files around! 
+
+
+### Package installation
+
+The following R packages must be installed and loaded
+before starting.  
+
+```{r message=FALSE, warning=FALSE, results='hide'}
+library(spocc)
+library(spThin)
+library(dismo)
+library(rgeos)
+library(ENMeval)
+library(ggspatial)
+library(sf)
+library(here)
+library(tidyverse)
+```
+
+Wallace also includes several functions developed to help integrate
+different packages and some additional functionality. For this reason,
+it is necessary to load the file `functions.R`, The function
+`system.file()` finds this script, and `source()` loads it.  
+
+```{r}
+source(system.file('shiny/funcs', 'functions.R', package = 'wallace'))
+```
+
+
+## Species distribution modeling
+
+Read in occurrence data.  
+```{r}
+# create path to user occurrences csv file
+userOccs.path <- here("data", "sample_latlongs.csv")
+
+# read in csv
+userOccs.csv <- read.csv(userOccs.path, header = TRUE)
+
+# remove rows with duplicate coordinates
+occs.dups <- duplicated(userOccs.csv[c('longitude', 'latitude')])
+occs <- userOccs.csv[!occs.dups, ]
+
+# remove NAs
+occs <- occs[complete.cases(occs$longitude, occs$latitude),]
+
+# give all records a unique ID
+occs$occID <- row.names(occs)
+```
+
+### Process Occurrence Data
+
+Spatial thinning selected. Thin distance selected is 5 km.  
+
+```{r}
+set.seed(273)
+output <-
+  spThin::thin(
+    occs,
+    'latitude',
+    'longitude',
+    'name',
+    thin.par = 5,
+    reps = 100,
+    locs.thinned.list.return = TRUE,
+    write.files = FALSE,
+    verbose = FALSE
+  )
+```
+
+Since spThin did 100 iterations, there are 100 different variations of
+how it thinned your occurrence localities. As there is a stochastic
+element in the algorithm, some iterations may include more localities
+than the others, and we need to make sure we maximize the number of
+localities we proceed with.
+
+```{r}
+# find the iteration that returns the max number of occurrences
+maxThin <- which(sapply(output, nrow) == max(sapply(output, nrow)))
+
+# if there's more than one max, pick the first one
+maxThin <-
+  output[[ifelse(length(maxThin) > 1, maxThin[1], maxThin)]]
+
+# subset occs to match only thinned occs. Preserve the full locality dataset as occs_all
+occs_all <- occs
+occs <- occs[as.numeric(rownames(maxThin)), ]
+
+# write thinned occs to spreadsheet
+thin_occs_dir <- here("output", "spreadsheets", "thinned_occs.csv")
+write_csv(occs, thin_occs_dir)
+```
+
+### Obtain Environmental Data
+
+Only considering bio1, bio5, bio6, bio10, bio11, bio12, bio13, and bio14 after assessing the correlation among rasters and removing ecologically irrelevant variables that have a correlation > 0.7 with more ecologically relevant variables.  
+
+```{r}
+d.envs <- here("data", "current_climate")
+
+# create paths to the raster files
+userRas.paths <-
+  file.path(
+    d.envs,
+    c(
+      'bio1.tif',
+      'bio5.tif',
+      'bio6.tif',
+      'bio10.tif',
+      'bio11.tif',
+      'bio12.tif',
+      'bio13.tif',
+      'bio14.tif'
+    )
+  )
+
+# make a RasterStack out of the raster files
+envs <- raster::stack(userRas.paths)
+```
+
+### Process Environmental Data
+
+Background selection technique chosen as Minimum Convex Polygon.  
+
+```{r}
+occs.xy <- occs[c('longitude', 'latitude')]
+sp::coordinates(occs.xy) <- ~ longitude + latitude
+bgExt <- mcp(occs.xy)
+```
+
+Buffer size of the study extent polygon defined as 0.5 degrees.  
+
+```{r}
+bgExt <- rgeos::gBuffer(bgExt, width = 0.5)
+```
+
+Mask environmental variables by Minimum Convex Polygon, and take a
+random sample of background values from the study extent. As the sample
+is random, your results may be different than those in the session. If
+there seems to be too much variability in these background samples, try
+increasing the number from 10,000 to something higher (e.g. 50,000 or
+100,000). The better your background sample, the less variability you’ll
+have between runs.  
+
+```{r}
+set.seed(2354)
+# crop the environmental rasters by the background extent shape
+envsBgCrop <- raster::crop(envs, bgExt)
+# mask the background extent shape from the cropped raster
+envsBgMsk <- raster::mask(envsBgCrop, bgExt)
+# sample random background points. Sometimes throws an error "Error: attempt to run non-function"- the functions still runs correctly, so idk what happened
+bg.xy <- dismo::randomPoints(envsBgMsk, 20000)
+# convert matrix output to data frame
+bg.xy <- as.data.frame(bg.xy)
+# write background points to df
+bg_dir <- here("output", "spreadsheets", "background_points.csv")
+write_csv(bg.xy, bg_dir)
+```
+
+### Partition Occurrence Data
+
+Occurrence data is now partitioned for cross-validation, a method that
+iteratively builds a model on all but one group and evaluates that model
+on the left-out group.  
+
+For example, if the data is partitioned into 3 groups A, B, and C, a
+model is first built with groups A and B and is evaluated on C. This is
+repeated by building a model with B and C and evaluating on A, and so on
+until all combinations are done.  
+
+Cross-validation operates under the assumption that the groups are
+independent of each other, which may or may not be a safe assumption for
+your dataset. Spatial partitioning is one way to ensure more
+independence between groups.  
+
+I'm partitioning using a jackknife approach, since our sample size is too low for a spatial blocking method to be effective.  
+
+```{r}
+set.seed(18736)
+occs.xy <- occs[c('longitude', 'latitude')]
+group.data <- ENMeval::get.jackknife(occ = occs.xy, bg.coords = bg.xy)
+```
+
+```{r}
+# pull out the occurrence and background partition group numbers from the list
+occs.grp <- group.data[[1]]
+bg.grp <- group.data[[2]]
+```
+
+### Build and Evaluate Niche Model
+
+You selected the maxent model.  
+
+```{r warning=FALSE, message=FALSE, cache=TRUE}
+set.seed(8372)
+# define the vector of regularization multipliers to test
+rms <- seq(0.5, 5, 0.5)
+# iterate model building over all chosen parameter settings
+e <-
+  ENMeval::ENMevaluate(
+    occs.xy,
+    envsBgMsk,
+    bg.coords = bg.xy,
+    RMvalues = rms,
+    fc = c('L', 'LQ', 'H', 'LQH'),
+    method = 'user',
+    occs.grp,
+    bg.grp,
+    clamp = TRUE,
+    algorithm = "maxnet"
+  )
+
+# unpack the results data frame, the list of models, and the RasterStack of raw predictions
+evalTbl <- e@results
+evalMods <- e@models
+names(evalMods) <- e@results$settings
+evalPreds <- e@predictions
+
+# write model output to file
+model_path <- here("output", "model.RDS")
+saveRDS(e, file = model_path)
+```
+
+View the response curve for environmental variables from the final model. In this case we only had one, bio1 (Average Annual Temperature).  
+
+```{r message=FALSE, warning=FALSE}
+# view response curves for environmental variables with non-zero coefficients
+plot(evalMods[["L_2.5"]], vars = c('bio1'), type = "cloglog")
+
+# write response curve plot to file
+resp_path <- here("output", "figures", "supp_fig_s2_resp_curve.pdf")
+pdf(resp_path, width = 3.54, height = 3.0)
+plot(evalMods[["L_2.5"]], vars = c('bio1'), type = "cloglog")
+dev.off()
+```
+
+Take a look at the model results. I'm selecting models based on AICc, so this is what I'm plotting. There are many models within 2 AICc, but they are all fairly similar and retain a single variable. Just picking the top model since it is a simple model and it doesn't change the results much qualitatively or quantitatively.  
+
+```{r}
+# view ENMeval results
+ENMeval::eval.plot(evalTbl, value = "delta.AICc")
+```
+
+```{r}
+# Select your model from the models list
+mod <- evalMods[["L_2.5"]]
+```
+
+
+Predict model to original background area plus Colima.  
+
+```{r, message=FALSE, warning=FALSE}
+# add colima to the background extent to extend prediction area
+colima <-
+  rnaturalearth::ne_states(country = "Mexico", returnclass = "sf") %>%
+  filter(name == "Colima") %>%
+  st_crop(
+    xmin = -106,
+    ymin = 20,
+    xmax = 106,
+    ymax = -18
+  )
+bgExt_sf <- st_as_sf(bgExt)
+st_crs(bgExt_sf) <- "+proj=longlat +datum=WGS84 +no_defs"
+
+
+bg_colima <- st_union(bgExt_sf, colima) %>%
+  st_convex_hull()
+
+# crop the environmental rasters by the background extent shape
+envsBgCrop_col <- raster::crop(envs, bg_colima)
+# mask the background extent shape from the cropped raster
+envsBgMsk_col <- raster::mask(envsBgCrop_col, bg_colima)
+
+# generate cloglog prediction
+pred <-
+  ENMeval::maxnet.predictRaster(mod, envsBgMsk_col, type = 'cloglog', clamp = TRUE)
+
+crs(pred) <- '+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs'
+
+#write prediction to file
+pred_path <- here("output", "rasters", "current_projection.tif")
+raster::writeRaster(pred, filename = pred_path, format = "GTiff", overwrite = TRUE)
+```
+
+```{r}
+plot(pred)
+```
+
+MESS map. It looks like most possible dispersal paths within their dispersal limits are analogous climate. A landscape genetics analysis with LGM climate would be reasonable.  
+
+```{r warning=FALSE, message=FALSE, cache=TRUE}
+bg_xy <- raster::as.data.frame(envsBgMsk) %>% na.omit()
+
+current_mess <- dismo::mess(envsBgMsk_col, bg_xy)
+
+crs(current_mess) <-
+  '+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs'
+
+ggplot() +
+  ggspatial::layer_spatial(data = current_mess) +
+  scale_fill_gradient2(na.value = "lightgrey") +
+  geom_point(data = occs, aes(x = longitude, y = latitude)) +
+  theme_minimal()
+
+# write mess raster to file
+mess_rast_out <- here("output", "rasters", "current_mess.tif")
+writeRaster(current_mess, mess_rast_out, format = "GTiff", overwrite = TRUE)
+```
+
+
+Thresholded model prediction for current climate. Thresholded by the minimum 10th percentile training presence. This threshold is more conservative then the minimum training presence value, although it likely converges the the MTP given the low number of training localities.  
+
+```{r}
+# get predicted values for occurrence grid cells
+occPredVals <- raster::extract(pred, occs.xy)
+# define minimum training presence threshold
+thr <- thresh(occPredVals, "p10")
+# threshold model prediction
+pred_p10 <- pred > thr
+
+#write threshold model prediction to file
+thresh_path <-
+  here("output", "rasters", "thresh_p10_current_pred.tif")
+raster::writeRaster(pred_p10, filename = thresh_path, format = "GTiff", overwrite = TRUE)
+```
+
+```{r}
+# plot the model prediction
+plot(pred_p10)
+```
+
+Project to the lgm.  
+
+```{r warning=FALSE, message=FALSE}
+lgm_path <- here("data", "lgm_climate")
+
+lgm_layers <- file.path(
+  lgm_path,
+  c(
+    'bio1.tif',
+    'bio5.tif',
+    'bio6.tif',
+    'bio10.tif',
+    'bio11.tif',
+    'bio12.tif',
+    'bio13.tif',
+    'bio14.tif'
+  )
+) %>%
+  raster::stack() %>%
+  raster::crop(bg_colima) %>%
+  raster::mask(bg_colima)
+
+# generate cloglog prediction
+lgm_pred <-
+  ENMeval::maxnet.predictRaster(mod, lgm_layers, type = 'cloglog', clamp = TRUE) 
+
+crs(lgm_pred) <- '+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs'
+```
+
+```{r}
+plot(lgm_pred)
+```
+
+
+MESS map. It looks like most possible dispersal paths within their dispersal limits are analogous climate. A landscape genetics analysis with LGM climate would be reasonable.
+```{r warning=FALSE, message=FALSE, cache=TRUE}
+lgm_mess <- dismo::mess(lgm_layers, bg_xy)
+
+crs(lgm_mess) <- '+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs'
+
+ggplot() +
+  ggspatial::layer_spatial(data = lgm_mess) +
+  scale_fill_gradient2(na.value = "lightgrey") +
+  geom_point(data = occs, aes(x = longitude, y = latitude)) +
+  theme_minimal()
+
+```
+
+
+LGM 10th percentile thresholded map.  
+
+```{r}
+# get predicted values for occurrence grid cells
+occPredVals_lgm <- raster::extract(lgm_pred, occs.xy)
+# define minimum training presence threshold
+thr_lgm <- thresh(occPredVals_lgm, "p10")
+# threshold model prediction
+lgm_p10 <- lgm_pred > thr_lgm
+
+plot(lgm_p10)
+```
+
+
+Write lgm projection and mess map to files.  
+
+```{r}
+lgm_out_path <- here("output", "rasters")
+
+raster::writeRaster(
+  lgm_pred,
+  filename = file.path(lgm_out_path, "lgm_projection.tif"),
+  format = "GTiff",
+  overwrite = TRUE
+)
+
+ raster::writeRaster(
+   lgm_mess,
+   filename = file.path(lgm_out_path, "lgm_mess.tif"),
+   format = "GTiff",
+   overwrite = TRUE
+   )
+
+raster::writeRaster(
+  lgm_p10,
+  filename = file.path(lgm_out_path, "thresh_p10_lgm_pred.tif"),
+  format = "GTiff",
+  overwrite = TRUE
+)
+```
+
+
+
+
+
+## Session information
+Session information for reproducibility.  
+
+```{r}
+si <- sessionInfo()
+
+si
+```
+
+
+Here is the code for writing the session info to the `doc` folder.  
+
+```{r}
+si_path <- here("doc", "session_info.txt")
+
+# write session info to the doc folder
+writeLines(capture.output(sessionInfo()), si_path)
+```
+
+
+
+## Some extra code
+Masking code in case a reviewer wants us to mask out extrapolated e-space.  
+
+```{r, eval=FALSE}
+## Code to mask rasters in case I decide to. The LGM has some very minor extrapolation across a fair portion of the map (negative numbers near zero). If I masked these, a fair portion of the map would be removed. There isn't really an objective way to decide what MESS value is too low and the more egregious values lie outside of their current range, so I'm providing the MESS maps as supplementary figures to aid in interpretation. 
+
+
+mess_mask_c <- current_mess
+
+# set all negative values to NA to make this a mask
+mess_mask_c[values(mess_mask_c) < -0.001] <- NA # added a small amount to account for imprecision
+crs(mess_mask_c) <- '+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs'
+
+# crop the mess mask
+mess_cropped_c <- mess_mask_c %>% 
+  crop(pred) 
+
+# mask the current climate by the mess mask
+current_masked <- pred %>% 
+  mask(mess_cropped_c)
+
+crs(current_masked) <- '+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs'
+
+```
+
+
+
+
+
+
+

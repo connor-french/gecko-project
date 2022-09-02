@@ -1,0 +1,104 @@
+---
+title: "Process land cover"
+author: "Connor French"
+date: "8/19/2021"
+output: html_document
+---
+
+I'm using the North American Environmental Atlas Land Cover at 30m resolution, 2015 (Landsat and RapidEye), downloaded on August 19, 2021 (http://www.cec.org/north-american-environmental-atlas/land-cover-30m-2015-landsat-and-rapideye/). I'm clipping the raster to our study area, converting the raster to a binary forest-no forest raster, then aggregating to the same resolution as our other data (~ 1km).  
+
+```{r}
+library(stars)
+library(here)
+library(tidyverse)
+library(sf)
+library(rnaturalearth)
+```
+
+Read in land cover and sampling locations for determining the study area. In addition, I'm using a coastal boundary from rnaturalearth to clip the ocean and one of the bioclim rasters to resample the data to.
+
+```{r, data}
+mexico_lc <- read_stars(here("data", "mexico_landcover", "MEX_NALCMS_2015_v2_land_cover_30m", "MEX_NALCMS_2015_v2_land_cover_30m.tif"))
+
+mexico_coast <- rnaturalearth::ne_countries(country = "Mexico", 
+                                            scale = "large",
+                                            returnclass = "sf") %>% 
+  st_geometry() %>% 
+  st_transform(crs = st_crs(mexico_lc))
+
+occs <- read_csv(here("data", "sample_latlongs.csv")) %>% 
+  dplyr::select(longitude, latitude) %>% 
+  filter(!duplicated(longitude)) %>% 
+  st_as_sf(coords = c("longitude", "latitude"),
+           crs = 4326)
+```
+
+Clip the raster to the range of the species with a 0.5 degree buffer, masking out the ocean.  
+
+```{r, warning=FALSE, message=FALSE}
+
+bg_ext <- st_convex_hull(st_union(occs)) %>% 
+  st_buffer(0.5) %>% 
+  st_transform(crs = st_crs(mexico_lc)) %>% 
+  # remove the buffer where it proceeds into the ocean
+  st_intersection(mexico_coast)
+
+
+envs_bg_crop <- st_crop(mexico_lc, bg_ext) %>% 
+  st_as_stars()
+
+
+plot(envs_bg_crop)
+```
+
+Convert all non-forested areas to 1 and forested areas to zero. The optimization method I use later will transform these into more reasonable "resistance" values. From the metadata, values 1, 2, 3, 4, 5, and 6 are all forest.
+
+
+```{r}
+envs_bg_crop <- envs_bg_crop %>% 
+  st_as_stars()
+  
+plot(envs_bg_crop)
+```
+
+Convert the landcover to a binary variable.  
+
+```{r}
+binary_lc <- envs_bg_crop %>% 
+  mutate(
+    lc = as.double(MEX_NALCMS_2015_v2_land_cover_30m.tif),
+    lc = case_when(
+      lc < 7 ~ 0,
+      lc >= 7 ~ 1,
+      TRUE ~ NA_real_
+      )
+    ) %>% 
+  select(-MEX_NALCMS_2015_v2_land_cover_30m.tif) 
+
+plot(binary_lc)
+```
+
+Aggregate to the resolution of the climate variables being used for modeling.  
+
+```{r}
+clim_rast <- read_stars(here("data", "lgm_climate", "bio1.tif"))
+
+
+binary_agg <- binary_lc %>% 
+  st_warp(clim_rast, 
+          use_gdal = TRUE,
+          method = "mode") %>% 
+  st_crop(bg_ext %>% st_transform(crs = st_crs(clim_rast))) 
+
+names(binary_agg) <- "forest_cover"
+
+plot(binary_agg)
+```
+
+
+Write to file.  
+
+```{r, eval=FALSE}
+write_stars(binary_agg, here("output", "rasters", "forest_cover.tif"))
+```
+

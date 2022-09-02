@@ -1,0 +1,1949 @@
+---
+title: "SpaceMix analysis"
+output: html_document
+---
+
+## Set up environment
+Loading `reticulate` for using python (scikit-allel). To run yourself, you need python v3+ and scikit-allel
+```{r, setup}
+library(reticulate)
+library(tidyverse)
+library(here)
+library(SpaceMix)
+library(viridis)
+library(coda)
+library(patchwork)
+
+remote_conda <- "/home/rstudio/miniconda3/condabin/conda"
+
+home_conda <- "/Users/connorfrench/opt/miniconda3/bin/conda"
+
+use_condaenv(condaenv = "py37", 
+             conda = home_conda,
+             required = TRUE)
+
+```
+
+
+
+Get path for vcf file and read in population mapping file. I'm mapping the actual population names to the correct localities.
+```{r}
+vcf_path <- here("data", "missing_70_thin.recode.vcf")
+  #"/Users/connorfrench/Dropbox/Old_Mac/School_Stuff/CUNY/gecko-project/genetics/recode_subdata.vcf"
+
+  
+  
+pops <- read_csv(here("data", "pops_file.csv")) %>% 
+  mutate(
+    site_name = case_when(
+      near(longitude, -105.0444, tol = 0.0001) ~ "ST",
+      # the near() function is more forgiving than == when comparing doubles
+      near(longitude, -105.2503, tol = 0.0001) ~ "PC",
+      near(longitude, -105.0980, tol = 0.0001) ~ "LG",
+      near(longitude, -104.8789, tol = 0.0001) ~ "P-35",
+      near(longitude, -104.8027, tol = 0.0001) ~ "PZ",
+      near(longitude, -104.5181, tol = 0.0001) ~ "CH",
+      near(longitude, -104.7663, tol = 0.0001) ~ "PT",
+      near(longitude, -104.9325, tol = 0.0001) ~ "LS",
+      near(longitude, -104.8500, tol = 0.0001) ~ "P-30"
+    )
+  )
+```
+
+
+Read in the vcf and take a look at  the keys present in the file.
+```{python}
+import allel
+import numpy as np
+import pandas as pd
+
+vcf = allel.read_vcf(r.vcf_path) 
+sorted(vcf.keys())
+```
+
+
+Let's take a look at some of the sample names and assign them to a vector for population mapping.
+```{python}
+samples = vcf["samples"]
+vcf["samples"][1:5,]
+```
+
+
+
+I'm checking that the order of individuals in the `pops` file match the order in the vcf. It does! I can safely map the pops to the individuals for allele counting.
+```{r}
+sum(py$samples == pops$individuals)
+```
+
+
+### Allele counts
+Get indices for each site name.
+```{r}
+# have to subtract by one since these are going to be used as indices in python
+
+st <- which(pops$site_name == "ST") - 1 %>% 
+  as.integer()
+pc <- which(pops$site_name == "PC") - 1 %>% 
+  as.integer()
+lg <- which(pops$site_name == "LG") - 1 %>% 
+  as.integer()
+p_35 <- which(pops$site_name == "P-35") - 1 %>% 
+  as.integer()
+pz <- which(pops$site_name == "PZ") - 1 %>% 
+  as.integer()
+ch <- which(pops$site_name == "CH") - 1 %>% 
+  as.integer()
+pt <- which(pops$site_name == "PT") - 1 %>% 
+  as.integer()
+ls <- which(pops$site_name == "LS") - 1 %>% 
+  as.integer()
+p_30 <- which(pops$site_name == "P-30") - 1 %>% 
+  as.integer()
+
+
+```
+
+Create a dictionary to map populations to their indices.
+```{python}
+pops_dict = {"ST" : r.st, "PC": r.pc, "LG": r.lg, "P_35": r.p_35, "PZ": r.pz, "CH": r.ch, "PT": r.pt, "LS": r.ls, "P_30": r.p_30}
+pops_dict
+```
+
+
+Get an allele counts table. 
+```{python}
+gt = allel.GenotypeArray(vcf["calldata/GT"])
+
+ac_pops = gt.count_alleles_subpops(subpops = pops_dict, max_allele=1)
+
+# We're only interested in the alternative allele counts for particular loci
+alt_pops = {}
+for key in ac_pops:
+   alt_pops[key] = ac_pops[key][:,1]
+
+```
+
+
+Convert allele counts to a matrix. 
+```{r}
+ac_mat <- bind_rows(py$alt_pops) %>% 
+  as.matrix() %>% 
+  t()
+
+dim(ac_mat)
+ac_mat[1:5, 1:5]
+```
+
+
+
+### Sample size
+Get sample size matrix. For each locus within each subpopulation I am summing the reference and alternate allele counts. This only sums the alleles that were genotyped (i.e. doesn't include missing data).
+
+```{python}
+sample_size = {}
+for key in ac_pops:
+  sample_size[key] = np.empty(shape = (len(ac_pops[key]), 1))
+  for loc in range(len(ac_pops[key])):
+    sample_size[key][loc,] = sum(ac_pops[key][loc,])
+
+print("Sample size for a single pop (ST)")
+sample_size["ST"]
+```
+
+
+Convert sample sizes dictionary to a matrix
+```{r}
+ss_mat <- bind_rows(py$sample_size) %>% 
+  as.matrix() %>% 
+  t()
+
+dim(ss_mat)
+ss_mat[1:5, 1:5]
+```
+
+### Allelic covariance
+Since we have a lot of missing data, we're going to make a normalized sample covariance matrix from the allele count and sample size data. This method results in pairwise, rather than listwise, deletion of missing data
+```{r}
+sample_covar <- get.nrmlzd.sample.covariance(ac_mat, ss_mat)
+```
+
+
+### Coordinates
+Convert the coordinates into a two-column matrix.
+```{r}
+pops_unique <- filter(pops, !duplicated(site_name))
+long <- pops_unique$longitude
+lat <- pops_unique$latitude
+
+locs <- cbind(long, lat)
+
+locs
+```
+
+## Run SpaceMix
+
+Note- can't attempt to specify another directory to save files to because `run.spacemix.analysis()` tries to `setwd()`, which R Projects don't like.
+
+### Covar trial
+Spatial prior with migration
+```{r}
+set.seed(4454)
+long_rand <- runif(9, 
+                   min = min(locs[,1]), 
+                   max = max(locs[,1])) %>% round(4)
+
+lat_rand <- runif(9, 
+                   min = min(locs[,2]), 
+                   max = max(locs[,2])) %>% round(4)
+
+locs_rand <- cbind(long_rand, lat_rand)
+
+
+run.spacemix.analysis(
+  n.fast.reps = 10,
+  fast.MCMC.ngen = 5e6,
+  fast.model.option = "target",
+  long.model.option = "source_and_target",
+  data.type = "sample.covariance",
+  sample.frequencies = NULL,
+  mean.sample.sizes = sample_covar$mean.sample.sizes,
+  counts = NULL,
+  sample.sizes = NULL,
+  sample.covariance = sample_covar$norm.sample.covariance,
+  target.spatial.prior.scale = NULL,
+  source.spatial.prior.scale = NULL,
+  spatial.prior.X.coordinates = locs_rand[,1],
+  spatial.prior.Y.coordinates = locs_rand[,2],
+  round.earth = TRUE,
+  long.run.initial.parameters = NULL,
+  k = nrow(ss_mat),
+  loci = ncol(ss_mat),
+  ngen = 1e8,
+  printfreq = 1e6,
+  samplefreq = 5e4,
+  mixing.diagn.freq = 50,
+  savefreq = 1e6,
+  directory = NULL,
+  prefix = "trial_spatial1"
+)
+```
+
+
+### Runs 1 and 2: No migration, spatial prior
+This run is inferring the geogenetic locations of individuals without admixture. I'm using observed locations as spatial priors. Repeated this twice.  
+
+#### Run 1
+```{r}
+run.spacemix.analysis(
+  n.fast.reps = 5,
+  fast.MCMC.ngen = 5e6,
+  fast.model.option = "target",
+  long.model.option = "target",
+  data.type = "counts",
+  sample.frequencies = NULL,
+  mean.sample.sizes = NULL,
+  counts = ac_mat,
+  sample.sizes = ss_mat,
+  sample.covariance = NULL,
+  target.spatial.prior.scale = NULL,
+  source.spatial.prior.scale = NULL,
+  spatial.prior.X.coordinates = locs[,1],
+  spatial.prior.Y.coordinates = locs[,2],
+  round.earth = TRUE,
+  long.run.initial.parameters = NULL,
+  k = nrow(ss_mat),
+  loci = ncol(ss_mat),
+  ngen = 1e8,
+  printfreq = 1e4,
+  samplefreq = 1e5,
+  mixing.diagn.freq = 50,
+  savefreq = 1e6,
+  directory = NULL,
+  prefix = "no_mig_spatial1"
+)
+```
+
+#### Run 2
+```{r}
+run.spacemix.analysis(
+  n.fast.reps = 5,
+  fast.MCMC.ngen = 5e6,
+  fast.model.option = "target",
+  long.model.option = "target",
+  data.type = "counts",
+  sample.frequencies = NULL,
+  mean.sample.sizes = NULL,
+  counts = ac_mat,
+  sample.sizes = ss_mat,
+  sample.covariance = NULL,
+  target.spatial.prior.scale = NULL,
+  source.spatial.prior.scale = NULL,
+  spatial.prior.X.coordinates = locs[,1],
+  spatial.prior.Y.coordinates = locs[,2],
+  round.earth = TRUE,
+  long.run.initial.parameters = NULL,
+  k = nrow(ss_mat),
+  loci = ncol(ss_mat),
+  ngen = 1e8,
+  printfreq = 1e4,
+  samplefreq = 1e5,
+  mixing.diagn.freq = 50,
+  savefreq = 1e6,
+  directory = NULL,
+  prefix = "no_mig_spatial2"
+)
+```
+
+### Run 3: No migration, random prior
+
+Randomly sample coordinates from a uniform distribution
+```{r}
+set.seed(42427)
+long_rand <- runif(9, 
+                   min = min(locs[,1]), 
+                   max = max(locs[,1])) %>% round(4)
+
+lat_rand <- runif(9, 
+                   min = min(locs[,2]), 
+                   max = max(locs[,2])) %>% round(4)
+
+locs_rand <- cbind(long_rand, lat_rand)
+```
+
+
+```{r}
+run.spacemix.analysis(
+  n.fast.reps = 5,
+  fast.MCMC.ngen = 5e6,
+  fast.model.option = "target",
+  long.model.option = "target",
+  data.type = "counts",
+  sample.frequencies = NULL,
+  mean.sample.sizes = NULL,
+  counts = ac_mat,
+  sample.sizes = ss_mat,
+  sample.covariance = NULL,
+  target.spatial.prior.scale = NULL,
+  source.spatial.prior.scale = NULL,
+  spatial.prior.X.coordinates = locs_rand[,1],
+  spatial.prior.Y.coordinates = locs_rand[,2],
+  round.earth = TRUE,
+  long.run.initial.parameters = NULL,
+  k = nrow(ss_mat),
+  loci = ncol(ss_mat),
+  ngen = 1e8,
+  printfreq = 1e4,
+  samplefreq = 1e5,
+  mixing.diagn.freq = 50,
+  savefreq = 1e6,
+  directory = NULL,
+  prefix = "no_mig_rand1"
+)
+```
+
+### Runs 4 and 5: Migration, spatial prior
+
+#### Run 4
+```{r}
+run.spacemix.analysis(
+  n.fast.reps = 5,
+  fast.MCMC.ngen = 5e6,
+  fast.model.option = "source_and_target",
+  long.model.option = "source_and_target",
+  data.type = "counts",
+  sample.frequencies = NULL,
+  mean.sample.sizes = NULL,
+  counts = ac_mat,
+  sample.sizes = ss_mat,
+  sample.covariance = NULL,
+  target.spatial.prior.scale = NULL,
+  source.spatial.prior.scale = NULL,
+  spatial.prior.X.coordinates = locs[,1],
+  spatial.prior.Y.coordinates = locs[,2],
+  round.earth = TRUE,
+  long.run.initial.parameters = NULL,
+  k = nrow(ss_mat),
+  loci = ncol(ss_mat),
+  ngen = 1e8,
+  printfreq = 1e4,
+  samplefreq = 1e5,
+  mixing.diagn.freq = 50,
+  savefreq = 1e6,
+  directory = NULL,
+  prefix = "mig_spatial1"
+)
+```
+
+#### Run 5
+```{r}
+run.spacemix.analysis(
+  n.fast.reps = 5,
+  fast.MCMC.ngen = 5e6,
+  fast.model.option = "source_and_target",
+  long.model.option = "source_and_target",
+  data.type = "counts",
+  sample.frequencies = NULL,
+  mean.sample.sizes = NULL,
+  counts = ac_mat,
+  sample.sizes = ss_mat,
+  sample.covariance = NULL,
+  target.spatial.prior.scale = NULL,
+  source.spatial.prior.scale = NULL,
+  spatial.prior.X.coordinates = locs[,1],
+  spatial.prior.Y.coordinates = locs[,2],
+  round.earth = TRUE,
+  long.run.initial.parameters = NULL,
+  k = nrow(ss_mat),
+  loci = ncol(ss_mat),
+  ngen = 1e8,
+  printfreq = 1e4,
+  samplefreq = 1e5,
+  mixing.diagn.freq = 50,
+  savefreq = 1e6,
+  directory = NULL,
+  prefix = "mig_spatial2"
+)
+```
+
+### Run 6: Migration, random prior
+
+Randomly sample coordinates from a uniform distribution. Using a new seed so the coordinates are different from the no migration run.
+
+```{r}
+set.seed(327)
+long_rand_2 <- runif(9, 
+                   min = min(locs[,1]), 
+                   max = max(locs[,1])) %>% round(4)
+
+lat_rand_2 <- runif(9, 
+                   min = min(locs[,2]), 
+                   max = max(locs[,2])) %>% round(4)
+
+locs_rand_2 <- cbind(long_rand_2, lat_rand_2)
+```
+
+```{r, echo = FALSE}
+run.spacemix.analysis(
+  n.fast.reps = 5,
+  fast.MCMC.ngen = 5e6,
+  fast.model.option = "source_and_target",
+  long.model.option = "source_and_target",
+  data.type = "counts",
+  sample.frequencies = NULL,
+  mean.sample.sizes = NULL,
+  counts = ac_mat,
+  sample.sizes = ss_mat,
+  sample.covariance = NULL,
+  target.spatial.prior.scale = NULL,
+  source.spatial.prior.scale = NULL,
+  spatial.prior.X.coordinates = locs_rand_2[,1],
+  spatial.prior.Y.coordinates = locs_rand_2[,2],
+  round.earth = TRUE,
+  long.run.initial.parameters = NULL,
+  k = nrow(ss_mat),
+  loci = ncol(ss_mat),
+  ngen = 1e8,
+  printfreq = 1e4,
+  samplefreq = 1e5,
+  mixing.diagn.freq = 50,
+  savefreq = 1e6,
+  directory = NULL,
+  prefix = "mig_rand1"
+)
+```
+
+## Evaluate Models
+I ran the models remotely and then put the output into the "output" folder. Each model is named according to its parameter settings:  
+
+* no_mig_rand1 = No migration, random prior
+* no_mig_spatial1/2 = No migration, spatial prior (run 1 and 2)
+* mig_rand1 = Migration, random prior
+* mig_spatial1/2 = Migration, spatial prior (run 1 and 2)
+
+### trial_spatial1
+
+#### MCMC performance
+Read in model object
+```{r}
+load(here("output", "trial_spatial1", "trial_spatial1_LongRun", "trial_spatial1_space_MCMC_output1.Robj"))
+```
+
+Visualize posterior probability trace plot.
+```{r}
+# Trace plot of posterior probability over the MCMC
+plot(Prob[800:2000],xlab="MCMC iterations",ylab="value",
+    main="Posterior probability trace plot",type='l')
+```
+
+Visualize alpha parameters of the spatial covariance function
+```{r}
+matplot(t(nugget),type='l',
+            xlab="MCMC iterations",ylab="Parameter value",
+            main="Trace plot of nugget parameters")
+```
+
+Joint marginal plot of `a1` vs `a0`.
+```{r}
+# Joint marginal plot of a0 and a1
+#   colored by where in the MCMC these 
+#   parameters took their values
+plot(a0,a1,xlab="a0",ylab="a1",
+    main="Joint marginal of a0 and a1",pch=20,
+    col=adjustcolor(rainbow(2000,start=4/6,end=6/6),0.3))
+legend(x="bottomright",pch=19,cex=0.5,
+        col=rainbow(2000,start=4/6,end=6/6)[c(1,1000,2000)],
+        legend=c("Sampled MCMC iteration 1",
+                 "Sampled MCMC iteration 1000",
+                 "Sampled MCMC iteration 2000"))
+```
+
+```{r}
+plot(a1,a2,xlab="a1",ylab="a2",
+    main="Joint marginal of a1 and a2",pch=20,
+    col=adjustcolor(rainbow(2000,start=4/6,end=6/6),0.3))
+legend(x="bottomright",pch=19,cex=0.5,
+        col=rainbow(2000,start=4/6,end=6/6)[c(1,1000,2000)],
+        legend=c("Sampled MCMC iteration 1",
+                 "Sampled MCMC iteration 1000",
+                 "Sampled MCMC iteration 2000"))
+```
+```{r}
+plot(a0,a2,xlab="a0",ylab="a2",
+    main="Joint marginal of a0 and a2",pch=20,
+    col=adjustcolor(rainbow(2000,start=4/6,end=6/6),0.3))
+legend(x="bottomright",pch=19,cex=0.5,
+        col=rainbow(2000,start=4/6,end=6/6)[c(1,1000,2000)],
+        legend=c("Sampled MCMC iteration 1",
+                 "Sampled MCMC iteration 1000",
+                 "Sampled MCMC iteration 2000"))
+```
+
+
+Acceptance rate of a0.
+```{r}
+# Acceptance rate of a0 over the course of the 
+#   MCMC analysis
+plot(accept_rates$a0_accept_rate,
+        xlab="MCMC iterations",ylab="Acceptance rate",
+        main="Acceptance rate of a0",type='l',
+        ylim=c(0.35,0.6))
+    abline(h=0.44,col="gray",lty=2)
+```
+
+Acceptance rate of nuggets
+```{r}
+matplot(t(accept_rates$nugget_accept_rate),
+            xlab="MCMC iterations",ylab="Acceptance rate",
+            main="Acceptance rates of nuggets",type='l',
+            ylim=c(0.3,0.7))
+    abline(h=0.44,col="gray",lty=2)
+```
+
+#### Model adequacy
+
+Load the data
+```{r}
+# first, load the standardized (mean-centered and normalized)
+#   allele frequency data object.  This object, which is the 
+#   "MCN.frequencies.list" (Mean Centered and Normalized) is 
+#   saved in the Long Run directory, and is generated if the 
+#   user has specified either allele count or allele frequeny 
+#   data. 
+#   Note that it is not generated if the user has specified the 
+#   sample covariance.
+
+load(here("output", "trial_spatial1", "trial_spatial1_LongRun", "trial_spatial1_MCN.frequencies.list.Robj"))
+```
+
+
+```{r}
+# Calculate the sample covariance from the mean centered 
+#   and normalized sample allele frequencies.
+# sample.covariance <- cov(t(MCN.frequencies.list$mean.centered.normalized.sample.frequencies),
+#                                 use="pairwise.complete.obs")
+sample.covariance <- sample_covar$norm.sample.covariance
+# Create a matrix that will perform a mean-centering 
+#   on the parametric covariance matrix
+# Then, mean-center the parametric ovariance matrix.
+k <- nrow(sample_covar$norm.sample.covariance)
+
+MC.matrix <- diag(k) - matrix(1/last.params$inv.mean.sample.sizes  / (sum(1/last.params$inv.mean.sample.sizes)),
+                              nrow=k,ncol=k,byrow=TRUE)
+
+MC.parametric.covariance <- (MC.matrix) %*% last.params$admixed.covariance %*% 
+  t(MC.matrix)
+
+# Compare the sample covariance to the parametric
+#   covariance.  Ideally, there will be a very tight correspondence 
+#   between the data and the model.  If there is not, it may 
+#   be an indication either that the MCMC has not converged on 
+#   the stationary distribution or that the process that generated 
+#   the data is only poorly approximated by SpaceMix's model.
+
+# The sample and parametric covariances can be plotted 
+#   against each other (if model fit is good they should 
+#   fall on the x=y red line)
+index.matrix <- upper.tri(sample.covariance,diag=TRUE)
+plot(sample.covariance[index.matrix], 
+    MC.parametric.covariance[index.matrix],
+    col=adjustcolor("black",0.3),pch=20,
+    xlab="Sample covariance",
+    ylab="Parametric covariance",
+    main="Model adequacy:\n matrix comparison")
+    abline(0,1,col="red")
+```
+
+```{r}
+# Or the patterns of decay of covariance with 
+#   geographic distance can be compared between 
+#   the data and the model.
+plot(last.params$D[1:k,1:k][index.matrix], 
+        sample.covariance[index.matrix],
+        pch=19,col="black",
+        xlab="geogenetic distance",
+        ylab="covariance",
+        main="Model adequacy:\n IBD patterns")
+        points(ex.output$last.params$D[1:k,1:k][index.matrix], 
+                MC.parametric.covariance[index.matrix],col="red",pch=20)
+        legend(x="topright",pch=19,col=c(1,2),
+                legend=c("observed","model estimate"))
+```
+
+#### Geogenetic map
+
+Load data for mapping.
+```{r}
+load(here("output", "trial_spatial1", "trial_spatial1_LongRun", "trial_spatial1_spacemix.data.Robj"))
+```
+
+
+```{r}
+sm_map_list <- make.spacemix.map.list(
+  MCMC.output.file = here("output", "trial_spatial1", "trial_spatial1_LongRun", "trial_spatial1_space_MCMC_output1.Robj"),
+  geographic.locations = locs,
+  name.vector = rownames(ac_mat),
+  color.vector = viridis(n = nrow(ac_mat)),
+  quantile = 0.95,
+  burnin = 0
+)
+```
+
+```{r}
+make.spacemix.map(
+  spacemix.map.list = sm_map_list,
+  text = TRUE,
+  ellipses = TRUE,
+  source.option = TRUE
+)
+```
+
+
+A plot to see how closely the geogenetic locations reflect the geographic locations.
+```{r}
+geo_coords <- as_tibble(sm_map_list$geographic.locations) %>% 
+  rename(longitude = long,
+         latitude = lat) %>% 
+  mutate(coord_source = "geo",
+         names = sm_map_list$name.vector)
+
+geogen_coords <- as_tibble(sm_map_list$MAPP.geogen.coords,
+                           .name_repair = "unique") %>% 
+  rename(longitude = "...1",
+         latitude = "...2") %>% 
+  mutate(coord_source = "geogenetic",
+         names = sm_map_list$name.vector)
+
+all_coords <- bind_rows(geo_coords, geogen_coords)
+
+ggplot(data = all_coords, aes(x = longitude, y = latitude, color = coord_source)) +
+  geom_point() +
+  geom_label(aes(label = names))
+
+
+```
+
+#### Admixture proportions
+Plot of admixture posterior probabilities
+```{r}
+admix_mat <- t(admix.proportions)
+colnames(admix_mat) <- sm_map_list$name.vector
+
+admix_df <- as_tibble(admix_mat) %>% 
+  pivot_longer(cols = everything(), names_to = "pop", values_to = "admix_prop") %>% 
+  mutate(admix_prop = round(admix_prop, 5))
+
+admix_hpd <- admix_df %>% 
+  group_by(pop) %>% 
+  summarize(lower_hpd = HPDinterval(as.mcmc(admix_prop))[1],
+            upper_hpd = HPDinterval(as.mcmc(admix_prop))[2],
+            point_est = mean(admix_prop)) %>% 
+  mutate(pop = fct_relevel(pop, sm_map_list$name.vector))
+
+ggplot(data = admix_hpd, aes(x = pop)) +
+  geom_point(aes(y = point_est)) +
+  geom_errorbar(aes(ymin = lower_hpd, ymax = upper_hpd))
+
+
+```
+
+
+### no_mig_rand1
+
+#### MCMC performance
+Read in model object
+```{r}
+load(here("output", "no_mig_rand1", "no_mig_rand1_LongRun", "no_mig_rand1_space_MCMC_output1.Robj"))
+```
+
+Visualize posterior probability trace plot.
+```{r}
+# Trace plot of posterior probability over the MCMC
+plot(Prob,xlab="MCMC iterations",ylab="value",
+    main="Posterior probability trace plot",type='l')
+```
+
+Visualize alpha parameters of the spatial covariance function
+```{r}
+matplot(t(nugget),type='l',
+            xlab="MCMC iterations",ylab="Parameter value",
+            main="Trace plot of nugget parameters")
+```
+
+Joint marginal plot of `a1` vs `a0`.
+```{r}
+# Joint marginal plot of a0 and a1
+#   colored by where in the MCMC these 
+#   parameters took their values
+plot(a0,a1,xlab="a0",ylab="a1",
+    main="Joint marginal of a0 and a1",pch=20,
+    col=adjustcolor(rainbow(1000,start=4/6,end=6/6),0.3))
+legend(x="bottomright",pch=19,cex=0.5,
+        col=rainbow(1000,start=4/6,end=6/6)[c(1,500,1000)],
+        legend=c("Sampled MCMC iteration 1",
+                 "Sampled MCMC iteration 500",
+                 "Sampled MCMC iteration 1000"))
+```
+
+Acceptance rate of a0.
+```{r}
+# Acceptance rate of a0 over the course of the 
+#   MCMC analysis
+plot(accept_rates$a0_accept_rate,
+        xlab="MCMC iterations",ylab="Acceptance rate",
+        main="Acceptance rate of a0",type='l',
+        ylim=c(0.35,0.6))
+    abline(h=0.44,col="gray",lty=2)
+```
+
+Acceptance rate of nuggets
+```{r}
+matplot(t(accept_rates$nugget_accept_rate),
+            xlab="MCMC iterations",ylab="Acceptance rate",
+            main="Acceptance rates of nuggets",type='l',
+            ylim=c(0.3,0.7))
+    abline(h=0.44,col="gray",lty=2)
+```
+
+#### Model adequacy
+
+Load the data
+```{r}
+# first, load the standardized (mean-centered and normalized)
+#   allele frequency data object.  This object, which is the 
+#   "MCN.frequencies.list" (Mean Centered and Normalized) is 
+#   saved in the Long Run directory, and is generated if the 
+#   user has specified either allele count or allele frequeny 
+#   data. 
+#   Note that it is not generated if the user has specified the 
+#   sample covariance.
+
+load(here("output", "no_mig_rand1", "no_mig_rand1_LongRun", "no_mig_rand1_MCN.frequencies.list.Robj"))
+```
+
+
+```{r}
+# Calculate the sample covariance from the mean centered 
+#   and normalized sample allele frequencies.
+sample.covariance <- cov(t(MCN.frequencies.list$mean.centered.normalized.sample.frequencies),
+                                use="pairwise.complete.obs")
+
+# Create a matrix that will perform a mean-centering 
+#   on the parametric covariance matrix
+# Then, mean-center the parametric ovariance matrix.
+k <- nrow(MCN.frequencies.list$mean.centered.normalized.sample.frequencies)
+
+MC.matrix <- diag(k) - matrix(1/last.params$inv.mean.sample.sizes  / (sum(1/last.params$inv.mean.sample.sizes)),
+                              nrow=k,ncol=k,byrow=TRUE)
+
+MC.parametric.covariance <- (MC.matrix) %*% last.params$admixed.covariance %*% 
+  t(MC.matrix)
+
+# Compare the sample covariance to the parametric
+#   covariance.  Ideally, there will be a very tight correspondence 
+#   between the data and the model.  If there is not, it may 
+#   be an indication either that the MCMC has not converged on 
+#   the stationary distribution or that the process that generated 
+#   the data is only poorly approximated by SpaceMix's model.
+
+# The sample and parametric covariances can be plotted 
+#   against each other (if model fit is good they should 
+#   fall on the x=y red line)
+index.matrix <- upper.tri(sample.covariance,diag=TRUE)
+plot(sample.covariance[index.matrix], 
+    MC.parametric.covariance[index.matrix],
+    col=adjustcolor("black",0.3),pch=20,
+    xlab="Sample covariance",
+    ylab="Parametric covariance",
+    main="Model adequacy:\n matrix comparison")
+    abline(0,1,col="red")
+```
+
+```{r}
+# Or the patterns of decay of covariance with 
+#   geographic distance can be compared between 
+#   the data and the model.
+plot(last.params$D[1:k,1:k][index.matrix], 
+        sample.covariance[index.matrix],
+        pch=19,col="black",
+        xlab="geogenetic distance",
+        ylab="covariance",
+        main="Model adequacy:\n IBD patterns")
+        points(ex.output$last.params$D[1:k,1:k][index.matrix], 
+                MC.parametric.covariance[index.matrix],col="red",pch=20)
+        legend(x="topright",pch=19,col=c(1,2),
+                legend=c("observed","model estimate"))
+```
+
+#### Geogenetic map
+
+Load data for mapping.
+```{r}
+load(here("output", "no_mig_rand1", "no_mig_rand1_LongRun", "no_mig_rand1_spacemix.data.Robj"))
+```
+
+
+```{r}
+sm_map_list <- make.spacemix.map.list(
+  MCMC.output.file = here("output", "no_mig_rand1", "no_mig_rand1_LongRun", "no_mig_rand1_space_MCMC_output1.Robj"),
+  geographic.locations = locs,
+  name.vector = rownames(ac_mat),
+  color.vector = viridis(n = nrow(ac_mat)),
+  quantile = 0.95,
+  burnin = 0
+)
+```
+
+```{r}
+make.spacemix.map(
+  spacemix.map.list = sm_map_list,
+  text = TRUE,
+  ellipses = TRUE,
+  source.option = FALSE
+)
+```
+
+A plot to see how closely the geogenetic locations reflect the geographic locations.
+```{r}
+geo_coords <- as_tibble(sm_map_list$geographic.locations) %>% 
+  rename(longitude = long,
+         latitude = lat) %>% 
+  mutate(coord_source = "geo",
+         names = sm_map_list$name.vector)
+
+geogen_coords <- as_tibble(sm_map_list$MAPP.geogen.coords,
+                           .name_repair = "unique") %>% 
+  rename(longitude = "...1",
+         latitude = "...2") %>% 
+  mutate(coord_source = "geogenetic",
+         names = sm_map_list$name.vector)
+
+all_coords <- bind_rows(geo_coords, geogen_coords)
+
+ggplot(data = all_coords, aes(x = longitude, y = latitude, color = coord_source)) +
+  geom_point() +
+  geom_label(aes(label = names))
+
+
+```
+
+
+
+Original map
+```{r}
+sm_map_list_og <- make.spacemix.map.list(
+  MCMC.output.file = here("output", "no_mig_spatial1", "no_mig_spatial1_LongRun", "no_mig_spatial1_space_MCMC_output1.Robj"),
+  geographic.locations = locs,
+  name.vector = rownames(ac_mat),
+  color.vector = viridis(n = nrow(ac_mat)),
+  quantile = 0.95,
+  burnin = 0
+)
+make.spacemix.map(
+  spacemix.map.list = sm_map_list_og,
+  text = TRUE,
+  ellipses = FALSE,
+  source.option = FALSE
+)
+```
+
+
+
+
+
+### no_mig_spatial1
+
+#### MCMC performance
+Read in model object
+```{r}
+load(here("reports", "no_mig_spatial1", "no_mig_spatial1_LongRun", "no_mig_spatial1_space_MCMC_output1.Robj"))
+```
+
+Visualize posterior probability trace plot.
+```{r}
+# Trace plot of posterior probability over the MCMC
+plot(Prob,xlab="MCMC iterations",ylab="value",
+    main="Posterior probability trace plot",type='l')
+```
+
+Visualize alpha parameters of the spatial covariance function
+```{r}
+matplot(t(nugget),type='l',
+            xlab="MCMC iterations",ylab="Parameter value",
+            main="Trace plot of nugget parameters")
+```
+
+Joint marginal plot of `a1` vs `a0`.
+```{r}
+# Joint marginal plot of a0 and a1
+#   colored by where in the MCMC these 
+#   parameters took their values
+plot(a0,a1,xlab="a0",ylab="a1",
+    main="Joint marginal of a0 and a1",pch=20,
+    col=adjustcolor(rainbow(1000,start=4/6,end=6/6),0.3))
+legend(x="bottomright",pch=19,cex=0.5,
+        col=rainbow(1000,start=4/6,end=6/6)[c(1,500,1000)],
+        legend=c("Sampled MCMC iteration 1",
+                 "Sampled MCMC iteration 500",
+                 "Sampled MCMC iteration 1000"))
+```
+
+
+
+
+Acceptance rate of a0.
+```{r}
+# Acceptance rate of a0 over the course of the 
+#   MCMC analysis
+plot(accept_rates$a0_accept_rate,
+        xlab="MCMC iterations",ylab="Acceptance rate",
+        main="Acceptance rate of a0",type='l',
+        ylim=c(0.35,0.6))
+    abline(h=0.44,col="gray",lty=2)
+```
+
+Acceptance rate of nuggets
+```{r}
+matplot(t(accept_rates$nugget_accept_rate),
+            xlab="MCMC iterations",ylab="Acceptance rate",
+            main="Acceptance rates of nuggets",type='l',
+            ylim=c(0.3,0.7))
+    abline(h=0.44,col="gray",lty=2)
+```
+
+#### Model adequacy
+
+Load the data
+```{r}
+# first, load the standardized (mean-centered and normalized)
+#   allele frequency data object.  This object, which is the 
+#   "MCN.frequencies.list" (Mean Centered and Normalized) is 
+#   saved in the Long Run directory, and is generated if the 
+#   user has specified either allele count or allele frequeny 
+#   data. 
+#   Note that it is not generated if the user has specified the 
+#   sample covariance.
+
+load(here("reports", "no_mig_spatial1", "no_mig_spatial1_LongRun", "no_mig_spatial1_MCN.frequencies.list.Robj"))
+```
+
+
+```{r}
+# Calculate the sample covariance from the mean centered 
+#   and normalized sample allele frequencies.
+sample.covariance <- cov(t(MCN.frequencies.list$mean.centered.normalized.sample.frequencies),
+                                use="pairwise.complete.obs")
+
+# Create a matrix that will perform a mean-centering 
+#   on the parametric covariance matrix
+# Then, mean-center the parametric ovariance matrix.
+k <- nrow(MCN.frequencies.list$mean.centered.normalized.sample.frequencies)
+
+MC.matrix <- diag(k) - matrix(1/last.params$inv.mean.sample.sizes  / (sum(1/last.params$inv.mean.sample.sizes)),
+                              nrow=k,ncol=k,byrow=TRUE)
+
+MC.parametric.covariance <- (MC.matrix) %*% last.params$admixed.covariance %*% 
+  t(MC.matrix)
+
+# Compare the sample covariance to the parametric
+#   covariance.  Ideally, there will be a very tight correspondence 
+#   between the data and the model.  If there is not, it may 
+#   be an indication either that the MCMC has not converged on 
+#   the stationary distribution or that the process that generated 
+#   the data is only poorly approximated by SpaceMix's model.
+
+# The sample and parametric covariances can be plotted 
+#   against each other (if model fit is good they should 
+#   fall on the x=y red line)
+index.matrix <- upper.tri(sample.covariance,diag=TRUE)
+plot(sample.covariance[index.matrix], 
+    MC.parametric.covariance[index.matrix],
+    col=adjustcolor("black",0.3),pch=20,
+    xlab="Sample covariance",
+    ylab="Parametric covariance",
+    main="Model adequacy:\n matrix comparison")
+    abline(0,1,col="red")
+```
+
+```{r}
+# Or the patterns of decay of covariance with 
+#   geographic distance can be compared between 
+#   the data and the model.
+plot(last.params$D[1:k,1:k][index.matrix], 
+        sample.covariance[index.matrix],
+        pch=19,col="black",
+        xlab="geogenetic distance",
+        ylab="covariance",
+        main="Model adequacy:\n IBD patterns")
+        points(ex.output$last.params$D[1:k,1:k][index.matrix], 
+                MC.parametric.covariance[index.matrix],col="red",pch=20)
+        legend(x="topright",pch=19,col=c(1,2),
+                legend=c("observed","model estimate"))
+```
+
+#### Geogenetic map
+
+Load data for mapping.
+```{r}
+load(here("reports", "no_mig_spatial1", "no_mig_spatial1_LongRun", "no_mig_spatial1_spacemix.data.Robj"))
+```
+
+
+```{r}
+sm_map_list <- make.spacemix.map.list(
+  MCMC.output.file = here("reports", "no_mig_spatial1", "no_mig_spatial1_LongRun", "no_mig_spatial1_space_MCMC_output1.Robj"),
+  geographic.locations = locs,
+  name.vector = rownames(ac_mat),
+  color.vector = viridis(n = nrow(ac_mat)),
+  quantile = 0.95,
+  burnin = 0
+)
+```
+
+```{r}
+make.spacemix.map(
+  spacemix.map.list = sm_map_list,
+  text = TRUE,
+  ellipses = TRUE,
+  source.option = FALSE
+)
+```
+
+
+A plot to see how closely the geogenetic locations reflect the geographic locations.
+```{r}
+geo_coords <- as_tibble(sm_map_list$geographic.locations) %>% 
+  rename(longitude = long,
+         latitude = lat) %>% 
+  mutate(coord_source = "geo",
+         names = sm_map_list$name.vector)
+
+geogen_coords <- as_tibble(sm_map_list$MAPP.geogen.coords,
+                           .name_repair = "unique") %>% 
+  rename(longitude = "...1",
+         latitude = "...2") %>% 
+  mutate(coord_source = "geogenetic",
+         names = sm_map_list$name.vector)
+
+all_coords <- bind_rows(geo_coords, geogen_coords)
+
+ggplot(data = all_coords, aes(x = longitude, y = latitude, color = coord_source)) +
+  geom_point() +
+  geom_label(aes(label = names))
+
+
+```
+
+### no_mig_spatial2
+
+#### MCMC performance
+Read in model object
+```{r}
+load(here("output", "no_mig_spatial2", "no_mig_spatial2_LongRun", "no_mig_spatial2_space_MCMC_output1.Robj"))
+```
+
+Visualize posterior probability trace plot.
+```{r}
+# Trace plot of posterior probability over the MCMC
+plot(Prob,xlab="MCMC iterations",ylab="value",
+    main="Posterior probability trace plot",type='l')
+```
+
+Visualize alpha parameters of the spatial covariance function
+```{r}
+matplot(t(nugget),type='l',
+            xlab="MCMC iterations",ylab="Parameter value",
+            main="Trace plot of nugget parameters")
+```
+
+Joint marginal plot of `a1` vs `a0`.
+```{r}
+# Joint marginal plot of a0 and a1
+#   colored by where in the MCMC these 
+#   parameters took their values
+plot(a0,a1,xlab="a0",ylab="a1",
+    main="Joint marginal of a0 and a1",pch=20,
+    col=adjustcolor(rainbow(1000,start=4/6,end=6/6),0.3))
+legend(x="bottomright",pch=19,cex=0.5,
+        col=rainbow(1000,start=4/6,end=6/6)[c(1,500,1000)],
+        legend=c("Sampled MCMC iteration 1",
+                 "Sampled MCMC iteration 500",
+                 "Sampled MCMC iteration 1000"))
+```
+
+Acceptance rate of a0.
+```{r}
+# Acceptance rate of a0 over the course of the 
+#   MCMC analysis
+plot(accept_rates$a0_accept_rate,
+        xlab="MCMC iterations",ylab="Acceptance rate",
+        main="Acceptance rate of a0",type='l',
+        ylim=c(0.35,0.6))
+    abline(h=0.44,col="gray",lty=2)
+```
+
+Acceptance rate of nuggets
+```{r}
+matplot(t(accept_rates$nugget_accept_rate),
+            xlab="MCMC iterations",ylab="Acceptance rate",
+            main="Acceptance rates of nuggets",type='l',
+            ylim=c(0.3,0.7))
+    abline(h=0.44,col="gray",lty=2)
+```
+
+#### Model adequacy
+
+Load the data
+```{r}
+# first, load the standardized (mean-centered and normalized)
+#   allele frequency data object.  This object, which is the 
+#   "MCN.frequencies.list" (Mean Centered and Normalized) is 
+#   saved in the Long Run directory, and is generated if the 
+#   user has specified either allele count or allele frequeny 
+#   data. 
+#   Note that it is not generated if the user has specified the 
+#   sample covariance.
+
+load(here("output", "no_mig_spatial2", "no_mig_spatial2_LongRun", "no_mig_spatial2_MCN.frequencies.list.Robj"))
+```
+
+
+```{r}
+# Calculate the sample covariance from the mean centered 
+#   and normalized sample allele frequencies.
+sample.covariance <- cov(t(MCN.frequencies.list$mean.centered.normalized.sample.frequencies),
+                                use="pairwise.complete.obs")
+
+# Create a matrix that will perform a mean-centering 
+#   on the parametric covariance matrix
+# Then, mean-center the parametric ovariance matrix.
+k <- nrow(MCN.frequencies.list$mean.centered.normalized.sample.frequencies)
+
+MC.matrix <- diag(k) - matrix(1/last.params$inv.mean.sample.sizes  / (sum(1/last.params$inv.mean.sample.sizes)),
+                              nrow=k,ncol=k,byrow=TRUE)
+
+MC.parametric.covariance <- (MC.matrix) %*% last.params$admixed.covariance %*% 
+  t(MC.matrix)
+
+# Compare the sample covariance to the parametric
+#   covariance.  Ideally, there will be a very tight correspondence 
+#   between the data and the model.  If there is not, it may 
+#   be an indication either that the MCMC has not converged on 
+#   the stationary distribution or that the process that generated 
+#   the data is only poorly approximated by SpaceMix's model.
+
+# The sample and parametric covariances can be plotted 
+#   against each other (if model fit is good they should 
+#   fall on the x=y red line)
+index.matrix <- upper.tri(sample.covariance,diag=TRUE)
+plot(sample.covariance[index.matrix], 
+    MC.parametric.covariance[index.matrix],
+    col=adjustcolor("black",0.3),pch=20,
+    xlab="Sample covariance",
+    ylab="Parametric covariance",
+    main="Model adequacy:\n matrix comparison")
+    abline(0,1,col="red")
+```
+
+```{r}
+# Or the patterns of decay of covariance with 
+#   geographic distance can be compared between 
+#   the data and the model.
+plot(last.params$D[1:k,1:k][index.matrix], 
+        sample.covariance[index.matrix],
+        pch=19,col="black",
+        xlab="geogenetic distance",
+        ylab="covariance",
+        main="Model adequacy:\n IBD patterns")
+        points(ex.output$last.params$D[1:k,1:k][index.matrix], 
+                MC.parametric.covariance[index.matrix],col="red",pch=20)
+        legend(x="topright",pch=19,col=c(1,2),
+                legend=c("observed","model estimate"))
+```
+
+#### Geogenetic map
+
+Load data for mapping.
+```{r}
+load(here("output", "no_mig_spatial2", "no_mig_spatial2_LongRun", "no_mig_spatial2_spacemix.data.Robj"))
+```
+
+
+```{r}
+sm_map_list <- make.spacemix.map.list(
+  MCMC.output.file = here("output", "no_mig_spatial2", "no_mig_spatial2_LongRun", "no_mig_spatial2_space_MCMC_output1.Robj"),
+  geographic.locations = locs,
+  name.vector = rownames(ac_mat),
+  color.vector = viridis(n = nrow(ac_mat)),
+  quantile = 0.95,
+  burnin = 0
+)
+```
+
+```{r}
+make.spacemix.map(
+  spacemix.map.list = sm_map_list,
+  text = TRUE,
+  ellipses = TRUE,
+  source.option = FALSE
+)
+```
+
+
+A plot to see how closely the geogenetic locations reflect the geographic locations.
+```{r}
+geo_coords <- as_tibble(sm_map_list$geographic.locations) %>% 
+  rename(longitude = long,
+         latitude = lat) %>% 
+  mutate(coord_source = "geo",
+         names = sm_map_list$name.vector)
+
+geogen_coords <- as_tibble(sm_map_list$MAPP.geogen.coords,
+                           .name_repair = "unique") %>% 
+  rename(longitude = "...1",
+         latitude = "...2") %>% 
+  mutate(coord_source = "geogenetic",
+         names = sm_map_list$name.vector)
+
+all_coords <- bind_rows(geo_coords, geogen_coords)
+
+ggplot(data = all_coords, aes(x = longitude, y = latitude, color = coord_source)) +
+  geom_point() +
+  geom_label(aes(label = names))
+
+
+```
+
+
+### mig_rand1
+
+#### MCMC performance
+Read in model object
+```{r}
+load(here("output", "mig_rand1", "mig_rand1_LongRun", "mig_rand1_space_MCMC_output1.Robj"))
+```
+
+Visualize posterior probability trace plot.
+```{r}
+# Trace plot of posterior probability over the MCMC
+plot(Prob,xlab="MCMC iterations",ylab="value",
+    main="Posterior probability trace plot",type='l')
+```
+
+Visualize posteriors of the a0, a1, and a2 parameters. The posteriors are very diffuse and bimodal- likely identifiability problems.
+```{r}
+a_post_df <- tibble(a0 = a0,
+                    a1 = a1,
+                    a2 = a2) %>% 
+  pivot_longer(everything(), names_to = "alpha", values_to = "post")
+
+
+ggplot(data = a_post_df, aes(x = post)) +
+  geom_density() +
+  facet_wrap(~alpha, scales = "free")
+```
+
+
+
+Visualize alpha parameters of the spatial covariance function
+```{r}
+matplot(t(nugget),type='l',
+            xlab="MCMC iterations",ylab="Parameter value",
+            main="Trace plot of nugget parameters")
+
+```
+
+Joint marginal plot of `a1` vs `a0`.
+```{r}
+# Joint marginal plot of a0 and a1
+#   colored by where in the MCMC these 
+#   parameters took their values
+plot(a0,a1,xlab="a0",ylab="a1",
+    main="Joint marginal of a0 and a1",pch=20,
+    col=adjustcolor(rainbow(1000,start=4/6,end=6/6),0.3))
+legend(x="bottomright",pch=19,cex=0.5,
+        col=rainbow(1000,start=4/6,end=6/6)[c(1,500,1000)],
+        legend=c("Sampled MCMC iteration 1",
+                 "Sampled MCMC iteration 500",
+                 "Sampled MCMC iteration 1000"))
+```
+
+Acceptance rate of a0.
+```{r}
+# Acceptance rate of a0 over the course of the 
+#   MCMC analysis
+plot(accept_rates$a0_accept_rate,
+        xlab="MCMC iterations",ylab="Acceptance rate",
+        main="Acceptance rate of a0",type='l',
+        ylim=c(0.35,0.6))
+    abline(h=0.44,col="gray",lty=2)
+```
+Joint marginal plot of `a1` vs `a2`.
+```{r}
+# Joint marginal plot of a0 and a1
+#   colored by where in the MCMC these 
+#   parameters took their values
+plot(a2,a1,xlab="a2",ylab="a1",
+    main="Joint marginal of a2 and a1",pch=20,
+    col=adjustcolor(rainbow(1000,start=4/6,end=6/6),0.3))
+legend(x="bottomright",pch=19,cex=0.5,
+        col=rainbow(1000,start=4/6,end=6/6)[c(1,500,1000)],
+        legend=c("Sampled MCMC iteration 1",
+                 "Sampled MCMC iteration 500",
+                 "Sampled MCMC iteration 1000"))
+```
+Joint marginal plot of `a0` vs `a2`.
+```{r}
+# Joint marginal plot of a0 and a1
+#   colored by where in the MCMC these 
+#   parameters took their values
+plot(a2,a0,xlab="a2",ylab="a0",
+    main="Joint marginal of a2 and a0",pch=20,
+    col=adjustcolor(rainbow(1000,start=4/6,end=6/6),0.3))
+legend(x="bottomright",pch=19,cex=0.5,
+        col=rainbow(1000,start=4/6,end=6/6)[c(1,500,1000)],
+        legend=c("Sampled MCMC iteration 1",
+                 "Sampled MCMC iteration 500",
+                 "Sampled MCMC iteration 1000"))
+```
+
+Acceptance rate of nuggets
+```{r}
+matplot(t(accept_rates$nugget_accept_rate),
+            xlab="MCMC iterations",ylab="Acceptance rate",
+            main="Acceptance rates of nuggets",type='l',
+            ylim=c(0.3,0.7))
+    abline(h=0.44,col="gray",lty=2)
+```
+
+#### Model adequacy
+
+Load the data
+```{r}
+# first, load the standardized (mean-centered and normalized)
+#   allele frequency data object.  This object, which is the 
+#   "MCN.frequencies.list" (Mean Centered and Normalized) is 
+#   saved in the Long Run directory, and is generated if the 
+#   user has specified either allele count or allele frequeny 
+#   data. 
+#   Note that it is not generated if the user has specified the 
+#   sample covariance.
+
+load(here("output", "mig_rand1", "mig_rand1_LongRun", "mig_rand1_MCN.frequencies.list.Robj"))
+```
+
+
+```{r}
+# Calculate the sample covariance from the mean centered 
+#   and normalized sample allele frequencies.
+sample.covariance <- cov(t(MCN.frequencies.list$mean.centered.normalized.sample.frequencies),
+                                use="pairwise.complete.obs")
+
+# Create a matrix that will perform a mean-centering 
+#   on the parametric covariance matrix
+# Then, mean-center the parametric ovariance matrix.
+k <- nrow(MCN.frequencies.list$mean.centered.normalized.sample.frequencies)
+
+MC.matrix <- diag(k) - matrix(1/last.params$inv.mean.sample.sizes  / (sum(1/last.params$inv.mean.sample.sizes)),
+                              nrow=k,ncol=k,byrow=TRUE)
+
+MC.parametric.covariance <- (MC.matrix) %*% last.params$admixed.covariance %*% 
+  t(MC.matrix)
+
+# Compare the sample covariance to the parametric
+#   covariance.  Ideally, there will be a very tight correspondence 
+#   between the data and the model.  If there is not, it may 
+#   be an indication either that the MCMC has not converged on 
+#   the stationary distribution or that the process that generated 
+#   the data is only poorly approximated by SpaceMix's model.
+
+# The sample and parametric covariances can be plotted 
+#   against each other (if model fit is good they should 
+#   fall on the x=y red line)
+index.matrix <- upper.tri(sample.covariance,diag=TRUE)
+plot(sample.covariance[index.matrix], 
+    MC.parametric.covariance[index.matrix],
+    col=adjustcolor("black",0.3),pch=20,
+    xlab="Sample covariance",
+    ylab="Parametric covariance",
+    main="Model adequacy:\n matrix comparison")
+    abline(0,1,col="red")
+```
+
+```{r}
+# Or the patterns of decay of covariance with 
+#   geographic distance can be compared between 
+#   the data and the model.
+plot(last.params$D[1:k,1:k][index.matrix], 
+        sample.covariance[index.matrix],
+        pch=19,col="black",
+        xlab="geogenetic distance",
+        ylab="covariance",
+        main="Model adequacy:\n IBD patterns")
+        points(ex.output$last.params$D[1:k,1:k][index.matrix], 
+                MC.parametric.covariance[index.matrix],col="red",pch=20)
+        legend(x="topright",pch=19,col=c(1,2),
+                legend=c("observed","model estimate"))
+```
+
+#### Geogenetic map
+
+Load data for mapping.
+```{r}
+load(here("output", "mig_rand1", "mig_rand1_LongRun", "mig_rand1_spacemix.data.Robj"))
+```
+
+
+```{r}
+sm_map_list <- make.spacemix.map.list(
+  MCMC.output.file = here("output", "mig_rand1", "mig_rand1_LongRun", "mig_rand1_space_MCMC_output1.Robj"),
+  geographic.locations = locs,
+  name.vector = rownames(ac_mat),
+  color.vector = viridis(n = nrow(ac_mat)),
+  quantile = 0.95,
+  burnin = 0
+)
+```
+
+```{r}
+make.spacemix.map(
+  spacemix.map.list = sm_map_list,
+  text = TRUE,
+  ellipses = TRUE,
+  source.option = TRUE
+)
+```
+
+
+A plot to see how closely the geogenetic locations reflect the geographic locations.
+```{r}
+geo_coords <- as_tibble(sm_map_list$geographic.locations) %>% 
+  rename(longitude = long,
+         latitude = lat) %>% 
+  mutate(coord_source = "geo",
+         names = sm_map_list$name.vector)
+
+geogen_coords <- as_tibble(sm_map_list$MAPP.geogen.coords,
+                           .name_repair = "unique") %>% 
+  rename(longitude = "...1",
+         latitude = "...2") %>% 
+  mutate(coord_source = "geogenetic",
+         names = sm_map_list$name.vector)
+
+all_coords <- bind_rows(geo_coords, geogen_coords)
+
+ggplot(data = all_coords, aes(x = longitude, y = latitude, color = coord_source)) +
+  geom_point() +
+  geom_label(aes(label = names))
+
+
+```
+
+#### Nugget
+Plotting the nugget parameters (drift unique to each population). Variance unique to population K that is not accounted for by the spatial model.
+
+```{r}
+nug_mat <- t(nugget)
+colnames(nug_mat) <- sm_map_list$name.vector
+
+nug_df <- as_tibble(nug_mat) %>% 
+  pivot_longer(cols = everything(), names_to = "pop", values_to = "nugget") %>% 
+  mutate(nugget = round(nugget, 5))
+
+nug_hpd <- nug_df %>% 
+  group_by(pop) %>% 
+  summarize(lower_hpd = quantile(nugget, 0.025),
+            upper_hpd = quantile(nugget, 0.975)) %>% 
+  mutate(pop = fct_relevel(pop, sm_map_list$name.vector),
+         nug_est = last.params$nugget)
+
+ggplot(data = nug_hpd, aes(x = pop)) +
+  #geom_point(aes(y = nug_est)) +
+  geom_errorbar(aes(ymin = lower_hpd, ymax = upper_hpd))
+```
+
+```{r}
+nn <- ncol(nug_mat)
+matplot(nug_mat, type = "l")
+legend("right", colnames(nug_mat),col=seq_len(nn),cex=0.8,fill=seq_len(nn))
+```
+
+
+#### Admixture proportions
+Plot of admixture posterior probabilities
+```{r}
+admix_mat <- t(admix.proportions)
+colnames(admix_mat) <- sm_map_list$name.vector
+
+admix_df <- as_tibble(admix_mat) %>% 
+  pivot_longer(cols = everything(), names_to = "pop", values_to = "admix_prop") %>% 
+  mutate(admix_prop = round(admix_prop, 5))
+
+admix_hpd <- admix_df %>% 
+  group_by(pop) %>% 
+  summarize(lower_hpd = quantile(admix_prop, 0.025),
+            upper_hpd = quantile(admix_prop, 0.975)) %>% 
+  mutate(pop = fct_relevel(pop, sm_map_list$name.vector),
+         admix_est = last.params$admix.proportions)
+
+ggplot(data = admix_hpd, aes(x = pop)) +
+  geom_point(aes(y = admix_est)) +
+  geom_errorbar(aes(ymin = lower_hpd, ymax = upper_hpd))
+
+
+```
+
+
+
+### mig_spatial1
+
+#### MCMC performance
+Read in model object
+```{r}
+load(here("reports", "mig_spatial1", "mig_spatial1_LongRun", "mig_spatial1_space_MCMC_output1.Robj"))
+```
+
+Visualize posterior probability trace plot.
+```{r}
+# Trace plot of posterior probability over the MCMC
+plot(Prob,xlab="MCMC iterations",ylab="value",
+    main="Posterior probability trace plot",type='l')
+```
+
+Visualize alpha parameters of the spatial covariance function
+```{r}
+matplot(t(nugget),type='l',
+            xlab="MCMC iterations",ylab="Parameter value",
+            main="Trace plot of nugget parameters")
+```
+
+Joint marginal plot of `a1` vs `a0`.
+```{r}
+# Joint marginal plot of a0 and a1
+#   colored by where in the MCMC these 
+#   parameters took their values
+plot(a0,a1,xlab="a0",ylab="a1",
+    main="Joint marginal of a0 and a1",pch=20,
+    col=adjustcolor(rainbow(1000,start=4/6,end=6/6),0.3))
+legend(x="bottomright",pch=19,cex=0.5,
+        col=rainbow(1000,start=4/6,end=6/6)[c(1,500,1000)],
+        legend=c("Sampled MCMC iteration 1",
+                 "Sampled MCMC iteration 500",
+                 "Sampled MCMC iteration 1000"))
+```
+
+Acceptance rate of a0.
+```{r}
+# Acceptance rate of a0 over the course of the 
+#   MCMC analysis
+plot(accept_rates$a0_accept_rate,
+        xlab="MCMC iterations",ylab="Acceptance rate",
+        main="Acceptance rate of a0",type='l',
+        ylim=c(0.35,0.6))
+    abline(h=0.44,col="gray",lty=2)
+```
+
+Acceptance rate of nuggets
+```{r}
+matplot(t(accept_rates$nugget_accept_rate),
+            xlab="MCMC iterations",ylab="Acceptance rate",
+            main="Acceptance rates of nuggets",type='l',
+            ylim=c(0.3,0.7))
+    abline(h=0.44,col="gray",lty=2)
+```
+
+#### Model adequacy
+
+Load the data
+```{r}
+# first, load the standardized (mean-centered and normalized)
+#   allele frequency data object.  This object, which is the 
+#   "MCN.frequencies.list" (Mean Centered and Normalized) is 
+#   saved in the Long Run directory, and is generated if the 
+#   user has specified either allele count or allele frequeny 
+#   data. 
+#   Note that it is not generated if the user has specified the 
+#   sample covariance.
+
+load(here("reports", "mig_spatial1", "mig_spatial1_LongRun", "mig_spatial1_MCN.frequencies.list.Robj"))
+```
+
+
+```{r}
+# Calculate the sample covariance from the mean centered 
+#   and normalized sample allele frequencies.
+sample.covariance <- cov(t(MCN.frequencies.list$mean.centered.normalized.sample.frequencies),
+                                use="pairwise.complete.obs")
+
+# Create a matrix that will perform a mean-centering 
+#   on the parametric covariance matrix
+# Then, mean-center the parametric ovariance matrix.
+k <- nrow(MCN.frequencies.list$mean.centered.normalized.sample.frequencies)
+
+MC.matrix <- diag(k) - matrix(1/last.params$inv.mean.sample.sizes  / (sum(1/last.params$inv.mean.sample.sizes)),
+                              nrow=k,ncol=k,byrow=TRUE)
+
+MC.parametric.covariance <- (MC.matrix) %*% last.params$admixed.covariance %*% 
+  t(MC.matrix)
+
+# Compare the sample covariance to the parametric
+#   covariance.  Ideally, there will be a very tight correspondence 
+#   between the data and the model.  If there is not, it may 
+#   be an indication either that the MCMC has not converged on 
+#   the stationary distribution or that the process that generated 
+#   the data is only poorly approximated by SpaceMix's model.
+
+# The sample and parametric covariances can be plotted 
+#   against each other (if model fit is good they should 
+#   fall on the x=y red line)
+index.matrix <- upper.tri(sample.covariance,diag=TRUE)
+plot(sample.covariance[index.matrix], 
+    MC.parametric.covariance[index.matrix],
+    col=adjustcolor("black",0.3),pch=20,
+    xlab="Sample covariance",
+    ylab="Parametric covariance",
+    main="Model adequacy:\n matrix comparison")
+    abline(0,1,col="red")
+```
+
+```{r}
+# Or the patterns of decay of covariance with 
+#   geographic distance can be compared between 
+#   the data and the model.
+plot(last.params$D[1:k,1:k][index.matrix], 
+        sample.covariance[index.matrix],
+        pch=19,col="black",
+        xlab="geogenetic distance",
+        ylab="covariance",
+        main="Model adequacy:\n IBD patterns")
+        points(ex.output$last.params$D[1:k,1:k][index.matrix], 
+                MC.parametric.covariance[index.matrix],col="red",pch=20)
+        legend(x="topright",pch=19,col=c(1,2),
+                legend=c("observed","model estimate"))
+```
+
+#### Geogenetic map
+
+Load data for mapping.
+```{r}
+load(here("reports", "mig_spatial1", "mig_spatial1_LongRun", "mig_spatial1_spacemix.data.Robj"))
+```
+
+
+```{r}
+sm_map_list <- make.spacemix.map.list(
+  MCMC.output.file = here("reports", "mig_spatial1", "mig_spatial1_LongRun", "mig_spatial1_space_MCMC_output1.Robj"),
+  geographic.locations = locs,
+  name.vector = rownames(ac_mat),
+  color.vector = viridis(n = nrow(ac_mat)),
+  quantile = 0.95,
+  burnin = 0
+)
+```
+
+```{r}
+make.spacemix.map(
+  spacemix.map.list = sm_map_list,
+  text = TRUE,
+  ellipses = TRUE,
+  source.option = TRUE
+)
+```
+
+
+A plot to see how closely the geogenetic locations reflect the geographic locations.
+```{r}
+geo_coords <- as_tibble(sm_map_list$geographic.locations) %>% 
+  rename(longitude = long,
+         latitude = lat) %>% 
+  mutate(coord_source = "geo",
+         names = sm_map_list$name.vector)
+
+geogen_coords <- as_tibble(sm_map_list$MAPP.geogen.coords,
+                           .name_repair = "unique") %>% 
+  rename(longitude = "...1",
+         latitude = "...2") %>% 
+  mutate(coord_source = "geogenetic",
+         names = sm_map_list$name.vector)
+
+all_coords <- bind_rows(geo_coords, geogen_coords)
+
+
+
+ggplot(data = all_coords, aes(x = longitude, y = latitude, color = coord_source)) +
+  geom_point() +
+  geom_label(aes(label = names))
+
+
+```
+
+#### Admixture proportions
+Plot of admixture posterior probabilities
+```{r}
+admix_mat <- t(admix.proportions)
+colnames(admix_mat) <- sm_map_list$name.vector
+
+admix_df <- as_tibble(admix_mat) %>% 
+  pivot_longer(cols = everything(), names_to = "pop", values_to = "admix_prop") %>% 
+  mutate(admix_prop = round(admix_prop, 5))
+
+admix_hpd <- admix_df %>% 
+  group_by(pop) %>% 
+  summarize(lower_hpd = quantile(admix_prop, 0.025),
+            upper_hpd = quantile(admix_prop, 0.975)) %>% 
+  mutate(pop = fct_relevel(pop, sm_map_list$name.vector),
+         admix_est = last.params$admix.proportions)
+
+ggplot(data = admix_hpd, aes(x = pop)) +
+  geom_point(aes(y = admix_est)) +
+  geom_errorbar(aes(ymin = lower_hpd, ymax = upper_hpd))
+
+
+```
+
+### mig_spatial2
+
+#### MCMC performance
+Read in model object
+```{r}
+load(here("output", "mig_spatial2", "mig_spatial2_LongRun", "mig_spatial2_space_MCMC_output1.Robj"))
+```
+
+Visualize posterior probability trace plot.
+```{r}
+# Trace plot of posterior probability over the MCMC
+plot(Prob,xlab="MCMC iterations",ylab="value",
+    main="Posterior probability trace plot",type='l')
+```
+
+Visualize alpha parameters of the spatial covariance function
+```{r}
+matplot(t(nugget),type='l',
+            xlab="MCMC iterations",ylab="Parameter value",
+            main="Trace plot of nugget parameters")
+```
+
+Joint marginal plot of `a1` vs `a0`.
+```{r}
+# Joint marginal plot of a0 and a1
+#   colored by where in the MCMC these 
+#   parameters took their values
+plot(a0,a1,xlab="a0",ylab="a1",
+    main="Joint marginal of a0 and a1",pch=20,
+    col=adjustcolor(rainbow(1000,start=4/6,end=6/6),0.3))
+legend(x="bottomright",pch=19,cex=0.5,
+        col=rainbow(1000,start=4/6,end=6/6)[c(1,500,1000)],
+        legend=c("Sampled MCMC iteration 1",
+                 "Sampled MCMC iteration 500",
+                 "Sampled MCMC iteration 1000"))
+```
+
+Acceptance rate of a0.
+```{r}
+# Acceptance rate of a0 over the course of the 
+#   MCMC analysis
+plot(accept_rates$a0_accept_rate,
+        xlab="MCMC iterations",ylab="Acceptance rate",
+        main="Acceptance rate of a0",type='l',
+        ylim=c(0.35,0.6))
+    abline(h=0.44,col="gray",lty=2)
+```
+
+Acceptance rate of nuggets
+```{r}
+matplot(t(accept_rates$nugget_accept_rate),
+            xlab="MCMC iterations",ylab="Acceptance rate",
+            main="Acceptance rates of nuggets",type='l',
+            ylim=c(0.3,0.7))
+    abline(h=0.44,col="gray",lty=2)
+```
+
+#### Model adequacy
+
+Load the data
+```{r}
+# first, load the standardized (mean-centered and normalized)
+#   allele frequency data object.  This object, which is the 
+#   "MCN.frequencies.list" (Mean Centered and Normalized) is 
+#   saved in the Long Run directory, and is generated if the 
+#   user has specified either allele count or allele frequeny 
+#   data. 
+#   Note that it is not generated if the user has specified the 
+#   sample covariance.
+
+load(here("output", "mig_spatial2", "mig_spatial2_LongRun", "mig_spatial2_MCN.frequencies.list.Robj"))
+```
+
+
+```{r}
+# Calculate the sample covariance from the mean centered 
+#   and normalized sample allele frequencies.
+sample.covariance <- cov(t(MCN.frequencies.list$mean.centered.normalized.sample.frequencies),
+                                use="pairwise.complete.obs")
+
+# Create a matrix that will perform a mean-centering 
+#   on the parametric covariance matrix
+# Then, mean-center the parametric ovariance matrix.
+k <- nrow(MCN.frequencies.list$mean.centered.normalized.sample.frequencies)
+
+MC.matrix <- diag(k) - matrix(1/last.params$inv.mean.sample.sizes  / (sum(1/last.params$inv.mean.sample.sizes)),
+                              nrow=k,ncol=k,byrow=TRUE)
+
+MC.parametric.covariance <- (MC.matrix) %*% last.params$admixed.covariance %*% 
+  t(MC.matrix)
+
+# Compare the sample covariance to the parametric
+#   covariance.  Ideally, there will be a very tight correspondence 
+#   between the data and the model.  If there is not, it may 
+#   be an indication either that the MCMC has not converged on 
+#   the stationary distribution or that the process that generated 
+#   the data is only poorly approximated by SpaceMix's model.
+
+# The sample and parametric covariances can be plotted 
+#   against each other (if model fit is good they should 
+#   fall on the x=y red line)
+index.matrix <- upper.tri(sample.covariance,diag=TRUE)
+plot(sample.covariance[index.matrix], 
+    MC.parametric.covariance[index.matrix],
+    col=adjustcolor("black",0.3),pch=20,
+    xlab="Sample covariance",
+    ylab="Parametric covariance",
+    main="Model adequacy:\n matrix comparison")
+    abline(0,1,col="red")
+```
+
+```{r}
+# Or the patterns of decay of covariance with 
+#   geographic distance can be compared between 
+#   the data and the model.
+plot(last.params$D[1:k,1:k][index.matrix], 
+        sample.covariance[index.matrix],
+        pch=19,col="black",
+        xlab="geogenetic distance",
+        ylab="covariance",
+        main="Model adequacy:\n IBD patterns")
+        points(ex.output$last.params$D[1:k,1:k][index.matrix], 
+                MC.parametric.covariance[index.matrix],col="red",pch=20)
+        legend(x="topright",pch=19,col=c(1,2),
+                legend=c("observed","model estimate"))
+```
+
+#### Geogenetic map
+
+Load data for mapping.
+```{r}
+load(here("output", "mig_spatial2", "mig_spatial2_LongRun", "mig_spatial2_spacemix.data.Robj"))
+```
+
+
+```{r}
+sm_map_list <- make.spacemix.map.list(
+  MCMC.output.file = here("output", "mig_spatial2", "mig_spatial2_LongRun", "mig_spatial2_space_MCMC_output1.Robj"),
+  geographic.locations = locs,
+  name.vector = rownames(ac_mat),
+  color.vector = viridis(n = nrow(ac_mat)),
+  quantile = 0.95,
+  burnin = 0
+)
+```
+
+```{r}
+make.spacemix.map(
+  spacemix.map.list = sm_map_list,
+  text = TRUE,
+  ellipses = TRUE,
+  source.option = TRUE
+)
+plot.admix.arrows(sm_map_list$MAPP.admix.source.coords, sm_map_list$MAPP.geogen.coords,
+  admix.proportions, colors = sm_map_list$color.vector, length = 0.1)
+```
+
+
+
+A plot to see how closely the geogenetic locations reflect the geographic locations.
+```{r}
+geo_coords <- as_tibble(sm_map_list$geographic.locations) %>% 
+  rename(longitude = long,
+         latitude = lat) %>% 
+  mutate(coord_source = "geo",
+         names = sm_map_list$name.vector)
+
+geogen_coords <- as_tibble(sm_map_list$MAPP.geogen.coords,
+                           .name_repair = "unique") %>% 
+  rename(longitude = "...1",
+         latitude = "...2") %>% 
+  mutate(coord_source = "geogenetic",
+         names = sm_map_list$name.vector)
+
+all_coords <- bind_rows(geo_coords, geogen_coords)
+
+ggplot(data = all_coords, aes(x = longitude, y = latitude, color = coord_source)) +
+  geom_point() +
+  geom_label(aes(label = names))
+
+
+```
+
+
+#### Admixture proportions
+Plot of admixture posterior probabilities
+```{r}
+admix_mat <- t(admix.proportions)
+colnames(admix_mat) <- sm_map_list$name.vector
+
+admix_df <- as_tibble(admix_mat) %>% 
+  pivot_longer(cols = everything(), names_to = "pop", values_to = "admix_prop") %>% 
+  mutate(admix_prop = round(admix_prop, 5))
+
+admix_hpd <- admix_df %>% 
+  group_by(pop) %>% 
+  summarize(lower_hpd = quantile(admix_prop, 0.025),
+            upper_hpd = quantile(admix_prop, 0.975)) %>% 
+  mutate(pop = fct_relevel(pop, sm_map_list$name.vector),
+         admix_est = last.params$admix.proportions)
+
+ggplot(data = admix_hpd, aes(x = pop)) +
+  geom_point(aes(y = admix_est)) +
+  geom_errorbar(aes(ymin = lower_hpd, ymax = upper_hpd))
+
+
+```
