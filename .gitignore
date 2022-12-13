@@ -25,7 +25,18 @@ vignettes/*.html vignettes/*.pdf
 .Renviron
 
 # data will go in figshare
-data/*
+data/*.vcf
+data/*.log
+data/*.imiss
+data/current_climate/*
+data/elevation/*
+data/lgm_climate/*
+data/mexico_landcover/*
+data/popgenome/*
+data/popgenome_50/*
+data/popgenome_50_ind70/*
+data/popgenome_70/*
+
 
 # output files
 output/*
